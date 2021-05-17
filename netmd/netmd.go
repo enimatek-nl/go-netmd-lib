@@ -113,98 +113,101 @@ func (md *NetMD) PrepareSend() {
 		log.Fatal(err)
 	}
 
-	dataSize := stat.Size()
-
-	defaultChunkSize := int64(0x00100000)
-	chunkSize := defaultChunkSize
-	var padding int64 = 0
-	var offset int64 = 44
-	packetCount := 0
+	//defaultChunkSize := int64(0x00100000)
+	padding := 0
+	frameSize := int(PCM)
 	iv := ekb.FirstIV
 
-	key, err := ekb.CreateKey()
-	blk, err := des.NewCipher(key)
+	key, _ := ekb.CreateKey()
+	cipherBlock, _ := des.NewCipher(key)
+
+	data := make([]byte, stat.Size())
+	_, err = file.Read(data)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	// loop through offsets and create the 'packets'.
+	if len(data)%frameSize != 0 {
+		padding = frameSize - (len(data) % frameSize)
+	}
+
+	if padding > 0 {
+		p := make([]byte, padding)
+		data = append(data, p...)
+	}
+
+	crypt := make([]byte, len(data))
+	encryptor := cipher.NewCBCEncrypter(cipherBlock, iv)
+	encryptor.CryptBlocks(crypt, data)
+
+	format := 0
+	discFormat := 6
+	frames := len(crypt) / frameSize
+	totalBytes := len(crypt) + 24
+
 	if md.debug {
-		log.Printf("file size %d chunk size %d", stat.Size(), chunkSize)
+		log.Printf("totalBytes: %d frameSize: %d frames: %d padding: %d", totalBytes, frameSize, frames, padding)
 	}
 
-	for offset < dataSize {
-
-		chunkSize = defaultChunkSize
-		if packetCount == 0 {
-			chunkSize -= 24
-		}
-
-		if offset+chunkSize >= dataSize {
-			padding = (offset + chunkSize) - dataSize
-		}
-
-		crypted := make([]byte, chunkSize)
-		data := make([]byte, chunkSize-padding)
-		_, err := file.ReadAt(data, offset)
-		if err != nil {
-			log.Fatal(err)
-		}
-		if padding > 0 {
-			p := make([]byte, padding)
-			data = append(data, p...)
-		}
-		encryptor := cipher.NewCBCEncrypter(blk, iv)
-		encryptor.CryptBlocks(crypted, data)
-
-		format := 0
-		discFormat := 6
-		frames := len(crypted) / int(PCM)
-		totalBytes := len(crypted) + 24
-
-		if md.debug {
-			log.Printf("totalBytes: %d frames: %d", totalBytes, frames)
-		}
-
-		d := []byte{0x00, 0x18, 0x00, 0x08, 0x00, 0x46, 0xf0, 0x03, 0x01, 0x03, 0x28, 0xff, 0x00, 0x01, 0x00, 0x10, 0x01, 0xff, 0xff, 0x00, byte(format) & 0xff, byte(discFormat) & 0xff}
-		d = append(d, intToHex32(int32(frames))...)
-		d = append(d, intToHex32(int32(totalBytes))...)
-		_, err = md.call(d)
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		// if packetCount > 0 only add the data.. first chunk will be resized by -24
-		s := []byte{0x00, 0x00, 0x00, 0x00}
-		s = append(s, intToHex32(int32(len(crypted)))...)
-		s = append(s, key...)
-		s = append(s, ekb.FirstIV...)
-		s = append(s, crypted...)
-
-		// return data through chan?
-		c, err := md.out.Write(s)
-		if err != nil {
-			log.Fatal(err)
-		}
-		log.Printf("done sending: %d", c)
-
-		r, err := md.read()
-		if err != nil {
-			log.Fatal(err)
-		}
-		log.Printf("% x", r)
-
-		//r := make([]byte, md.maxIn)
-		//_, err = md.in.Read(r)
-		//if err != nil {
-		//	log.Fatal(err)
-		//}
-		//log.Printf("% x", r)
-
-		iv = crypted[len(crypted)-8:]
-		offset += chunkSize
-		packetCount++
+	d := []byte{0x00, 0x18, 0x00, 0x08, 0x00, 0x46, 0xf0, 0x03, 0x01, 0x03, 0x28, 0xff, 0x00, 0x01, 0x00, 0x10, 0x01, 0xff, 0xff, 0x00, byte(format) & 0xff, byte(discFormat) & 0xff}
+	d = append(d, intToHex32(int32(frames))...)
+	d = append(d, intToHex32(int32(totalBytes))...)
+	_, err = md.call(d)
+	if err != nil {
+		log.Fatal(err)
 	}
+
+	// if packetCount > 0 only add the data.. first chunk will be resized by -24
+	s := []byte{0x00, 0x00, 0x00, 0x00}
+	s = append(s, intToHex32(int32(len(crypt)))...)
+	s = append(s, key...)
+	s = append(s, ekb.FirstIV...)
+	s = append(s, crypt...)
+
+	outStream, err := md.out.NewStream(len(s), 1)
+	c, err := outStream.Write(s)
+	outStream.Close()
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Printf("done sending: %d", c)
+
+	i := md.poll()
+	for i == -1 {
+		i = md.poll()
+		time.Sleep(time.Millisecond * 100)
+		log.Println("wait.")
+	}
+	r, err := md.receive(i)
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Printf("%d : % x", i, r)
+
+	err = md.CacheTOC()
+	if err != nil {
+		log.Fatal(err)
+	}
+	err = md.SyncTOC()
+	if err != nil {
+		log.Fatal(err)
+	}
+	err = md.CommitTrack(0, sessionKey)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	//r := make([]byte, md.maxIn)
+	//_, err = md.in.Read(r)
+	//if err != nil {
+	//	log.Fatal(err)
+	//}
+	//log.Printf("% x", r)
+
+	//	iv = crypt[len(crypt)-8:]
+	//	offset += chunkSize
+	//	packetCount++
+	//}
 
 	// packets == encrypt wav data (per frame?) -> datakey, iv, encrypted(data)
 	// totalbytes = wireformat (2048) * frames + (packets * 24)
@@ -218,7 +221,7 @@ func (md *NetMD) PrepareSend() {
 
 	// netmd_secure_commit_track
 	// netmd_secure_session_key_forget
-
+	md.ForgetSecureKey()
 	md.LeaveSecureSession()
 	md.Release()
 }
@@ -404,6 +407,22 @@ func (md *NetMD) NewTrackProtection(i int16) error {
 	return nil
 }
 
+func (md *NetMD) SyncTOC() error {
+	_, err := md.call([]byte{0x00, 0x18, 0x08, 0x10, 0x18, 0x02, 0x00, 0x00})
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (md *NetMD) CacheTOC() error {
+	_, err := md.call([]byte{0x00, 0x18, 0x08, 0x10, 0x18, 0x02, 0x03, 0x00})
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
 func (md *NetMD) EraseTrack(trk int) {
 
 }
@@ -438,28 +457,36 @@ func (md *NetMD) call(i []byte) ([]byte, error) {
 func (md *NetMD) read() ([]byte, error) {
 	for tries := 0; tries < 4; tries++ {
 		if h := md.poll(); h != -1 {
-			buf := make([]byte, h)
-			if _, err := md.dev.Control(gousb.ControlIn|gousb.ControlVendor|gousb.ControlInterface, 0x81, 0, 0, buf); err != nil {
-				return nil, err
-			}
-			if md.debug {
-				if buf[0] == 0x0a {
-					return nil, errors.New("md.call got rejected")
-				} else if buf[0] == 0x09 {
-					log.Printf("md.call accepted -> % x", buf)
-				}
-			}
-			return buf, nil
+			return md.receive(h)
 		}
 		time.Sleep(time.Millisecond * 100)
 	}
 	return nil, errors.New("poll failed")
 }
 
+func (md *NetMD) receive(s int) ([]byte, error) {
+	buf := make([]byte, s)
+	if _, err := md.dev.Control(gousb.ControlIn|gousb.ControlVendor|gousb.ControlInterface, 0x81, 0, 0, buf); err != nil {
+		return nil, err
+	}
+	if md.debug {
+		if buf[0] == 0x0a {
+			return nil, errors.New("md.call rejected")
+		} else if buf[0] == 0x09 {
+			log.Printf("md.call accepted -> % x", buf)
+		} else if buf[0] == 0x0f {
+			log.Printf("md.call interim -> % x", buf)
+		}
+	}
+	return buf, nil
+}
+
 func (md *NetMD) poll() int {
 	buf := make([]byte, 4)
 	md.dev.Control(gousb.ControlIn|gousb.ControlVendor|gousb.ControlInterface, 0x01, 0, 0, buf)
-	//log.Printf("raw-poll: % x", buf)
+	if md.debug {
+		log.Printf("raw-poll: % x", buf)
+	}
 	if buf[0] == 0x01 && buf[1] == 0x81 {
 		return int(buf[2])
 	}
