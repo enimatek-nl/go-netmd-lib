@@ -19,12 +19,12 @@ type Encoding byte
 type Channels byte
 
 const (
-	encSP  Encoding = 0x90
-	encLP2 Encoding = 0x92
-	encLP4 Encoding = 0x93
+	EncSP  Encoding = 0x90
+	EncLP2 Encoding = 0x92
+	EncLP4 Encoding = 0x93
 
-	chanStereo Channels = 0x00
-	chanMono   Channels = 0x01
+	ChanStereo Channels = 0x00
+	ChanMono   Channels = 0x01
 )
 
 var (
@@ -57,6 +57,7 @@ func NewNetMD(dev *gousb.Device, debug bool) (md *NetMD, err error) {
 	return
 }
 
+// Send will transmit the Track data encrypted to the NetMD
 func (md *NetMD) Send(trk *Track) (err error) {
 	// housekeeping
 	md.forgetSecureKey()
@@ -72,19 +73,12 @@ func (md *NetMD) Send(trk *Track) (err error) {
 	md.kekExchange(sessionKey)          // (data) key encryption key
 
 	totalBytes := (trk.Frames * FrameSize[trk.Format]) + 24
-	if md.debug {
-		log.Printf("calculated a total bytes of %d", totalBytes)
-	}
 	err = md.initSecureSend(trk.Format, trk.discFormat, trk.Frames, totalBytes)
 	if err != nil {
 		return
 	}
 
-	key, err := DESDecrypt(trk.key, md.ekb.kek)
-	if err != nil {
-		return
-	}
-
+	key, _ := DESDecrypt(trk.key, md.ekb.kek)
 	dataCounter := 0
 	for i, p := range trk.Packets {
 		s := make([]byte, 0)
@@ -99,9 +93,11 @@ func (md *NetMD) Send(trk *Track) (err error) {
 			log.Fatal(err)
 		}
 		dataCounter += t
-		log.Printf("Packet %d / %d Transmitted: %d bytes", i, len(trk.Packets), dataCounter)
+		if md.debug {
+			log.Printf("Packet %d / %d Transmitted: %d bytes", i, len(trk.Packets), dataCounter)
+		}
 	}
-	
+
 	log.Println("waiting for MD to finish data write")
 	i := -1
 	for t := 0; t < 99; t++ {
@@ -114,29 +110,23 @@ func (md *NetMD) Send(trk *Track) (err error) {
 
 	r, err := md.receive(i)
 	if err != nil {
-		log.Fatal(err)
+		return
 	}
 	if md.debug {
-		log.Printf("Encrypted Reply: % x", r)
+		log.Printf("Encrypted Reply: % x", r) // TODO: decode this? it's not really used.
 	}
 
 	trackNr := hexToInt16(r[17:19])
 	if md.debug {
-		log.Printf("track %d to committed", trackNr)
+		log.Printf("track %d committed", trackNr)
 	}
-
-	//decoderBlock, err := des.NewCipher(sessionKey)
-	//decoder := cipher.NewCBCDecrypter(decoderBlock, ByteArr16)
-	//decoder.CryptBlocks()
-	//													  __ __ .. .. .. .. .. .. .. .. .. .. ..  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32
-	// 09 18 00 08 00 46 f0 03 01 03 28 00 00 01 00 10 01 00 00 00 00 06 00 00 01 ed 00 0f 68 18 44 4d 5f f2 38 6c 6b 89 8b 67 97 3d 67 5c c5 be e1 ec ca 0a 50 12 1b 66 82 20 1e 3a 7e c7 5c ba 09 18 00 08 00 46 f0 03 01 03 28 00 00 01 00 10 01 00 00 00 00 06 00 00 01 ed 00 0f 68 18 44 4d 5f f2 38 6c 6b 89 8b 67 97 3d 67 5c c5 be e1 ec ca 0a 50 12 1b 66 82 20 1e 3a 7e c7 5c ba
 
 	err = md.CacheTOC()
 	if err != nil {
 		return
 	}
 
-	// TODO: set trackname?
+	// TODO: set trackname? need to create these functions first
 
 	err = md.SyncTOC()
 	if err != nil {
@@ -151,69 +141,6 @@ func (md *NetMD) Send(trk *Track) (err error) {
 	md.leaveSecureSession()
 	md.release()
 
-	return
-}
-
-func (md *NetMD) RequestDiscCapacity() (recorded uint64, total uint64, available uint64, err error) {
-	r, err := md.call([]byte{0x00, 0x18, 0x06, 0x02, 0x10, 0x10, 0x00, 0x30, 0x80, 0x03, 0x00, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00})
-	if err != nil {
-		return
-	}
-	recorded = (hexToInt(r[29]) * 3600) + (hexToInt(r[30]) * 60) + hexToInt(r[31])
-	total = (hexToInt(r[35]) * 3600) + (hexToInt(r[36]) * 60) + hexToInt(r[37])
-	available = (hexToInt(r[42]) * 3600) + (hexToInt(r[43]) * 60) + hexToInt(r[44])
-	return
-}
-
-func (md *NetMD) SetDiscHeader(t string) error {
-	o, err := md.RequestDiscHeader()
-	if err != nil {
-		return err
-	}
-	j := len(o) // length of old title
-	h := len(t) // length of new title
-	c := []byte{0x00, 0x18, 0x07, 0x02, 0x20, 0x18, 0x01, 0x00, 0x00, 0x30, 0x00, 0x0a, 0x00, 0x50, 0x00, 0x00, byte(h) & 0xff, 0x00, 0x00, 0x00, byte(j) & 0xff}
-	c = append(c, []byte(t)...) // append actual title data
-	_, err = md.call(c)
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
-func (md *NetMD) RequestDiscHeader() (string, error) {
-	r, err := md.call([]byte{0x00, 0x18, 0x06, 0x02, 0x20, 0x18, 0x01, 0x00, 0x00, 0x30, 0x00, 0x0a, 0x00, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00})
-	if err != nil {
-		return "", err
-	}
-	return string(r[25:]), nil
-}
-
-func (md *NetMD) RequestTrackTitle(trk int) (t string, err error) {
-	r, err := md.call([]byte{0x00, 0x18, 0x06, 0x02, 0x20, 0x18, 0x01, 0x00, byte(trk) & 0xff, 0x30, 0x00, 0x0a, 0x00, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00})
-	if err != nil {
-		return
-	}
-	t = string(r[0:])
-	return
-}
-
-func (md *NetMD) RecordingParameters() (encoding Encoding, channels Channels, err error) {
-	r, err := md.call([]byte{0x00, 0x18, 0x09, 0x80, 0x01, 0x03, 0x30, 0x88, 0x01, 0x00, 0x30, 0x88, 0x05, 0x00, 0x30, 0x88, 0x07, 0x00, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00})
-	if err != nil {
-		return
-	}
-	encoding = Encoding(r[34])
-	channels = Channels(r[35])
-	return
-}
-
-func (md *NetMD) RequestStatus() (disk bool, err error) {
-	r, err := md.call([]byte{0x00, 0x18, 0x09, 0x80, 0x01, 0x02, 0x30, 0x88, 0x00, 0x00, 0x30, 0x88, 0x04, 0x00, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00})
-	if err != nil {
-		return
-	}
-	disk = r[26] == 0x40 // 0x80 no disk
 	return
 }
 
@@ -233,20 +160,132 @@ func (md *NetMD) CacheTOC() error {
 	return nil
 }
 
-func (md *NetMD) EraseTrack(trk int) {
-
+// RequestDiscCapacity returns the totals in seconds
+func (md *NetMD) RequestDiscCapacity() (recorded uint64, total uint64, available uint64, err error) {
+	r, err := md.call([]byte{0x00, 0x18, 0x06, 0x02, 0x10, 0x10, 0x00, 0x30, 0x80, 0x03, 0x00, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00})
+	if err != nil {
+		return
+	}
+	recorded = (hexToInt(r[29]) * 3600) + (hexToInt(r[30]) * 60) + hexToInt(r[31])
+	total = (hexToInt(r[35]) * 3600) + (hexToInt(r[36]) * 60) + hexToInt(r[37])
+	available = (hexToInt(r[42]) * 3600) + (hexToInt(r[43]) * 60) + hexToInt(r[44])
+	return
 }
 
-func (md *NetMD) MoveTrack(trk, to int) {
-
+// SetDiscHeader will write  a raw title to the disc
+func (md *NetMD) SetDiscHeader(t string) error {
+	o, err := md.RequestDiscHeader()
+	if err != nil {
+		return err
+	}
+	j := len(o) // length of old title
+	h := len(t) // length of new title
+	c := []byte{0x00, 0x18, 0x07, 0x02, 0x20, 0x18, 0x01, 0x00, 0x00, 0x30, 0x00, 0x0a, 0x00, 0x50, 0x00, 0x00, byte(h) & 0xff, 0x00, 0x00, 0x00, byte(j) & 0xff}
+	c = append(c, []byte(t)...) // append actual title data
+	_, err = md.call(c)
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
-func (md *NetMD) RequestTrackLength(trk int) {
-
+// RequestDiscHeader returns the raw title of the disc
+func (md *NetMD) RequestDiscHeader() (string, error) {
+	r, err := md.call([]byte{0x00, 0x18, 0x06, 0x02, 0x20, 0x18, 0x01, 0x00, 0x00, 0x30, 0x00, 0x0a, 0x00, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00})
+	if err != nil {
+		return "", err
+	}
+	return string(r[25:]), nil
 }
 
-func (md *NetMD) RequestTrackEncoding(trk int) {
+// RecordingParameters current default recording parameters set on the NetMD
+func (md *NetMD) RecordingParameters() (encoding Encoding, channels Channels, err error) {
+	r, err := md.call([]byte{0x00, 0x18, 0x09, 0x80, 0x01, 0x03, 0x30, 0x88, 0x01, 0x00, 0x30, 0x88, 0x05, 0x00, 0x30, 0x88, 0x07, 0x00, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00})
+	if err != nil {
+		return
+	}
+	encoding = Encoding(r[34])
+	channels = Channels(r[35])
+	return
+}
 
+// RequestStatus returns known status flags
+func (md *NetMD) RequestStatus() (disk bool, err error) {
+	r, err := md.call([]byte{0x00, 0x18, 0x09, 0x80, 0x01, 0x02, 0x30, 0x88, 0x00, 0x00, 0x30, 0x88, 0x04, 0x00, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00})
+	if err != nil {
+		return
+	}
+	disk = r[26] == 0x40 // 0x80 no disk
+	return
+}
+
+// RequestTrackTitle returns the raw title of the trk number starting from 0
+func (md *NetMD) RequestTrackTitle(trk int) (t string, err error) {
+	// TODO
+	r, err := md.call([]byte{0x00, 0x18, 0x06, 0x02, 0x20, 0x18, 0x01, 0x00, byte(trk) & 0xff, 0x30, 0x00, 0x0a, 0x00, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00})
+	if err != nil {
+		return
+	}
+	t = string(r[0:])
+	return
+}
+
+// SetTrackTitle set the title of the trk number starting from 0
+func (md *NetMD) SetTrackTitle(trk int, t string) {
+	// TODO
+	s := []byte{0x00,0x18,0x07,0x02,0x20,0x18 ,0x02}
+	s = append(s, intToHex16(int16(trk))...)
+	s = append(s, []byte{0x30,0x00 ,0x0a,0x00 ,0x50,0x00}...)
+	// oldLen ,0x00,0x00 newLen t
+}
+
+// EraseTrack will erase the trk number starting from 0
+func (md *NetMD) EraseTrack(trk int) error {
+	s := []byte{0x00, 0x18, 0x40, 0xff, 0x01, 0x00, 0x20, 0x10, 0x01}
+	s = append(s, intToHex16(int16(trk))...)
+	_, err := md.call(s)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+// MoveTrack will move the trk number to a new position
+func (md *NetMD) MoveTrack(trk, to int) error {
+	s := []byte{0x00, 0x18, 0x43, 0xff, 0x00, 0x00, 0x20, 0x10, 0x01}
+	s = append(s, intToHex16(int16(trk))...)
+	s = append(s, []byte{0x20, 0x10, 0x01}...)
+	s = append(s, intToHex16(int16(to))...)
+	_, err := md.call(s)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+// RequestTrackLength returns the duration in seconds of the trk starting from 0
+func (md *NetMD) RequestTrackLength(trk int) (duration uint64, err error) {
+	s := []byte{0x00, 0x18, 0x06, 0x02, 0x20, 0x10, 0x01}
+	s = append(s, intToHex16(int16(trk))...)
+	s = append(s, []byte{0x30, 0x00, 0x01, 0x00, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00}...)
+	r, err := md.call(s)
+	if err != nil {
+		return
+	}
+	duration = (hexToInt(r[27]) * 3600) + (hexToInt(r[28]) * 60) + hexToInt(r[29])
+	return
+}
+
+// RequestTrackEncoding returns the Encoding of the trk starting from 0
+func (md *NetMD) RequestTrackEncoding(trk int) (encoding Encoding, err error) {
+	s := []byte{0x00, 0x18, 0x06, 0x02, 0x20, 0x10, 0x01}
+	s = append(s, intToHex16(int16(trk))...)
+	s = append(s, []byte{0x30, 0x80, 0x07, 0x00, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00}...)
+	r, err := md.call(s)
+	if err != nil {
+		return
+	}
+	return Encoding(r[len(r)-2]), nil
 }
 
 func (md *NetMD) call(i []byte) ([]byte, error) {

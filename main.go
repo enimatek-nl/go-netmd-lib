@@ -43,19 +43,23 @@ func main() {
 
 			//encoding, _, _ := md.RecordingParameters()
 
-			name := "big.wav"
+			//name := "big.wav"
 			//name := "demo.wav"
 
-			track, err := md.NewTrack(name, netmd.WfPCM, netmd.DfStereoSP)
-			if err != nil {
-				log.Fatal(err)
-			}
-			log.Printf("Prepared Track; frameSize: %d frames: %d padding: %d packets: %d", netmd.FrameSize[track.Format], track.Frames, track.Padding, len(track.Packets))
+			//track, err := md.NewTrack(name, netmd.WfPCM, netmd.DfStereoSP)
+			//if err != nil {
+			//	log.Fatal(err)
+			//}
+			//log.Printf("Prepared Track; frameSize: %d frames: %d padding: %d packets: %d", netmd.FrameSize[track.Format], track.Frames, track.Padding, len(track.Packets))
+			//
+			//err = md.Send(track)
+			//if err != nil {
+			//	log.Fatal(err)
+			//}
 
-			err = md.Send(track)
-			if err != nil {
-				log.Fatal(err)
-			}
+			//z, _ := md.RequestTrackLength(2)
+			t,_:=md.RequestTrackTitle(2)
+			log.Println(t)
 
 		}
 	}
