@@ -1,61 +1,47 @@
 package netmd
 
 import (
-	"crypto/cipher"
-	"crypto/des"
 	"errors"
 	"github.com/google/gousb"
 	"log"
-	"os"
 	"time"
 )
 
 type NetMD struct {
 	debug bool
 	dev   *gousb.Device
-	in    *gousb.InEndpoint
 	out   *gousb.OutEndpoint
-	maxIn int
+	ekb   *EKB
 }
 
 type Encoding byte
 
 type Channels byte
 
-type WireFormat int
-
 const (
-	ATRACSP   Encoding = 0x90
-	ATRAC3LP2 Encoding = 0x92
-	ATRAC3LP4 Encoding = 0x93
+	encSP  Encoding = 0x90
+	encLP2 Encoding = 0x92
+	encLP4 Encoding = 0x93
 
-	Stereo Channels = 0x00
-	Mono   Channels = 0x01
+	chanStereo Channels = 0x00
+	chanMono   Channels = 0x01
+)
 
-	PCM WireFormat = 2048
-	LP2 WireFormat = 192
-	LP4 WireFormat = 96
+var (
+	ByteArr16 = []byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
 )
 
 func NewNetMD(dev *gousb.Device, debug bool) (md *NetMD, err error) {
 	md = &NetMD{
 		dev:   dev,
 		debug: debug,
+		ekb:   NewEKB(),
 	}
 	for num := range md.dev.Desc.Configs {
 		config, _ := md.dev.Config(num)
 		for _, desc := range config.Desc.Interfaces {
 			intf, _ := config.Interface(desc.Number, 0)
 			for _, endpointDesc := range intf.Setting.Endpoints {
-				if endpointDesc.Direction == gousb.EndpointDirectionIn {
-					if md.in, err = intf.InEndpoint(endpointDesc.Number); err != nil {
-						return
-					}
-					md.maxIn = endpointDesc.MaxPacketSize
-					if md.debug {
-						log.Printf("%s", endpointDesc)
-					}
-				}
 				if endpointDesc.Direction == gousb.EndpointDirectionOut {
 					if md.out, err = intf.OutEndpoint(endpointDesc.Number); err != nil {
 						return
@@ -71,112 +57,59 @@ func NewNetMD(dev *gousb.Device, debug bool) (md *NetMD, err error) {
 	return
 }
 
-func (md *NetMD) Acquire() error {
-	_, err := md.call([]byte{0x00, 0xff, 0x01, 0x0c, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff})
-	if err != nil {
-		return err
-	}
-	return nil
-}
+func (md *NetMD) Send(trk *Track) (err error) {
+	// housekeeping
+	md.forgetSecureKey()
+	md.leaveSecureSession()
 
-func (md *NetMD) Release() error {
-	_, err := md.call([]byte{0x00, 0xff, 0x01, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff})
-	if err != nil {
-		return err
-	}
-	return nil
-}
+	// set up the secure session
+	md.acquire()
+	md.trackProtection(0x01) // fails on sharp?
+	md.enterSecureSession()
+	md.sendKeyData()
+	md.sessionKeyExchange()
+	sessionKey, _ := md.ekb.RetailMAC() // build the local sessionKey
+	md.kekExchange(sessionKey)          // (data) key encryption key
 
-func (md *NetMD) PrepareSend() {
-	md.ForgetSecureKey()
-	md.LeaveSecureSession()
-
-	md.Acquire()
-	md.NewTrackProtection(0x01) // fails on sharp?
-	md.EnterSecureSession()
-
-	ekb := NewEKB()
-	md.SendKeyData(ekb)
-
-	nonce := NewNonce()
-	md.SessionKeyExchange(nonce)
-
-	sessionKey, _ := ekb.RetailMAC(nonce)
-	md.RequestDownload(ekb, sessionKey)
-
-	file, err := os.Open("demo.wav")
-	if err != nil {
-		log.Fatal(err)
-	}
-	stat, err := file.Stat()
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	//defaultChunkSize := int64(0x00100000)
-	padding := 0
-	frameSize := int(PCM)
-	iv := ekb.FirstIV
-
-	key, _ := ekb.CreateKey()
-	cipherBlock, _ := des.NewCipher(key)
-
-	data := make([]byte, stat.Size())
-	_, err = file.Read(data)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	if len(data)%frameSize != 0 {
-		padding = frameSize - (len(data) % frameSize)
-	}
-
-	if padding > 0 {
-		p := make([]byte, padding)
-		data = append(data, p...)
-	}
-
-	crypt := make([]byte, len(data))
-	encryptor := cipher.NewCBCEncrypter(cipherBlock, iv)
-	encryptor.CryptBlocks(crypt, data)
-
-	format := 0
-	discFormat := 6
-	frames := len(crypt) / frameSize
-	totalBytes := len(crypt) + 24
-
+	totalBytes := (trk.Frames * FrameSize[trk.Format]) + 24
 	if md.debug {
-		log.Printf("totalBytes: %d frameSize: %d frames: %d padding: %d", totalBytes, frameSize, frames, padding)
+		log.Printf("calculated a total bytes of %d", totalBytes)
 	}
-
-	d := []byte{0x00, 0x18, 0x00, 0x08, 0x00, 0x46, 0xf0, 0x03, 0x01, 0x03, 0x28, 0xff, 0x00, 0x01, 0x00, 0x10, 0x01, 0xff, 0xff, 0x00, byte(format) & 0xff, byte(discFormat) & 0xff}
-	d = append(d, intToHex32(int32(frames))...)
-	d = append(d, intToHex32(int32(totalBytes))...)
-	_, err = md.call(d)
+	err = md.initSecureSend(trk.Format, trk.discFormat, trk.Frames, totalBytes)
 	if err != nil {
-		log.Fatal(err)
+		return
 	}
 
-	// if packetCount > 0 only add the data.. first chunk will be resized by -24
-	s := []byte{0x00, 0x00, 0x00, 0x00}
-	s = append(s, intToHex32(int32(len(crypt)))...)
-	s = append(s, key...)
-	s = append(s, ekb.FirstIV...)
-	s = append(s, crypt...)
+	key, err := DESDecrypt(trk.key, md.ekb.kek)
+	if err != nil {
+		return
+	}
 
-	outStream, err := md.out.NewStream(len(s), 1)
-	c, err := outStream.Write(s)
+	dataCounter := 0
+	outStream, err := md.out.NewStream(totalBytes, 1)
+	for _, p := range trk.Packets {
+		s := make([]byte, 0)
+		if p.first {
+			s = append(s, intToHex64(int64(len(p.data)))...)
+			s = append(s, key...)
+			s = append(s, md.ekb.iv...)
+		}
+		s = append(s, p.data...)
+		i, err := outStream.Write(s)
+		if err != nil {
+			log.Fatal(err)
+		}
+		dataCounter += i
+		log.Printf("Transmitted %d / %d", dataCounter, totalBytes)
+	}
 	outStream.Close()
-	if err != nil {
-		log.Fatal(err)
-	}
-	log.Printf("done sending: %d", c)
 
+	// TODO: set time-out on this?
+	log.Println("waiting for MD to finish data write")
 	i := md.poll()
 	for i == -1 {
 		i = md.poll()
-		time.Sleep(time.Millisecond * 100)
-		log.Println("wait.")
+		time.Sleep(time.Millisecond * 250)
 	}
 	r, err := md.receive(i)
 	if err != nil {
@@ -184,128 +117,38 @@ func (md *NetMD) PrepareSend() {
 	}
 	log.Printf("%d : % x", i, r)
 
+	trackNr := hexToInt16(r[17:19])
+	if md.debug {
+		log.Printf("track# to commit: %d", trackNr)
+	}
+
+	//decoderBlock, err := des.NewCipher(sessionKey)
+	//decoder := cipher.NewCBCDecrypter(decoderBlock, ByteArr16)
+	//decoder.CryptBlocks()
+	//													  __ __ .. .. .. .. .. .. .. .. .. .. ..  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32
+	// 09 18 00 08 00 46 f0 03 01 03 28 00 00 01 00 10 01 00 00 00 00 06 00 00 01 ed 00 0f 68 18 44 4d 5f f2 38 6c 6b 89 8b 67 97 3d 67 5c c5 be e1 ec ca 0a 50 12 1b 66 82 20 1e 3a 7e c7 5c ba 09 18 00 08 00 46 f0 03 01 03 28 00 00 01 00 10 01 00 00 00 00 06 00 00 01 ed 00 0f 68 18 44 4d 5f f2 38 6c 6b 89 8b 67 97 3d 67 5c c5 be e1 ec ca 0a 50 12 1b 66 82 20 1e 3a 7e c7 5c ba
+
 	err = md.CacheTOC()
 	if err != nil {
-		log.Fatal(err)
+		return
 	}
+
+	// TODO: set trackname?
+
 	err = md.SyncTOC()
 	if err != nil {
-		log.Fatal(err)
+		return
 	}
-	err = md.CommitTrack(0, sessionKey)
+	err = md.commitTrack(int(trackNr), sessionKey)
 	if err != nil {
-		log.Fatal(err)
+		return
 	}
 
-	//r := make([]byte, md.maxIn)
-	//_, err = md.in.Read(r)
-	//if err != nil {
-	//	log.Fatal(err)
-	//}
-	//log.Printf("% x", r)
+	md.forgetSecureKey()
+	md.leaveSecureSession()
+	md.release()
 
-	//	iv = crypt[len(crypt)-8:]
-	//	offset += chunkSize
-	//	packetCount++
-	//}
-
-	// packets == encrypt wav data (per frame?) -> datakey, iv, encrypted(data)
-	// totalbytes = wireformat (2048) * frames + (packets * 24)
-	// send query:  1800 080046 f0030103 28 ff 000100 1001 ffff 00 ...
-	// key, iv, data in packets -> md.out: 'len data?' + key + iv + data
-	// read reply and des decrypt + get track name / number
-
-	// ^^^
-	// netmd_prepare_packets (calc frame length packets)
-	// netmd_secure_send_track (session key track details
-
-	// netmd_secure_commit_track
-	// netmd_secure_session_key_forget
-	md.ForgetSecureKey()
-	md.LeaveSecureSession()
-	md.Release()
-}
-
-func (md *NetMD) CommitTrack(trk int, sessionKey []byte) error {
-	auth, err := DESEncrypt([]byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, sessionKey)
-	if err != nil {
-		return err
-	}
-	s := []byte{0x00, 0x18, 0x00, 0x08, 0x00, 0x46, 0xf0, 0x03, 0x01, 0x03, 0x48, 0xff, 0x00, 0x10, 0x01}
-	s = append(s, intToHex16(int16(trk))...)
-	s = append(s, auth...)
-	_, err = md.call(s)
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
-func (md *NetMD) SendKeyData(ekb *EKB) error {
-	if len(ekb.Signature) != 24 {
-		return errors.New("signature needs to be 24")
-	}
-	if len(ekb.Chain) != 32 {
-		return errors.New("chain needs to be 2 * 16 (32)")
-	}
-
-	size := byte(16 + 32 + 24)
-
-	s := []byte{0x00, 0x18, 0x00, 0x08, 0x00, 0x46, 0xf0, 0x03, 0x01, 0x03, 0x12, 0xff, 0x00, size & 0xff, 0x00, 0x00, 0x00, size & 0xff, 0x00, 0x00, 0x00, byte(len(ekb.Chain)/16) & 0xff, 0x00, 0x00, 0x00, byte(ekb.Depth) & 0xff}
-	s = append(s, ekb.Id...)
-	s = append(s, 0x00, 0x00, 0x00, 0x00)
-	s = append(s, ekb.Chain...)
-	s = append(s, ekb.Signature...)
-
-	md.call(s)
-
-	return nil
-}
-
-func (md *NetMD) SessionKeyExchange(nonce *Nonce) error {
-	s := []byte{0x00, 0x18, 0x00, 0x08, 0x00, 0x46, 0xf0, 0x03, 0x01, 0x03, 0x20, 0xff, 0x00, 0x00, 0x00}
-	s = append(s, nonce.Host...)
-	r, err := md.call(s)
-	if err != nil {
-		return err
-	}
-	nonce.Dev = r[15:]
-	return nil
-}
-
-func (md *NetMD) RequestDownload(ekb *EKB, sessionKey []byte) error {
-	if len(ekb.ContentId) != 20 {
-		return errors.New("supplied contentId length wrong")
-	}
-	if len(ekb.Kek) != 8 {
-		return errors.New("supplied kek length wrong")
-	}
-	if len(sessionKey) != 8 {
-		return errors.New("supplied sessionKey length wrong")
-	}
-	blk, err := des.NewCipher(sessionKey)
-	if err != nil {
-		return err
-	}
-
-	d := []byte{0x01, 0x01, 0x01, 0x01}
-	d = append(d, ekb.ContentId...)
-	d = append(d, ekb.Kek...)
-
-	blkMode := cipher.NewCBCEncrypter(blk, ekb.IV)
-	crypted := make([]byte, len(d))
-	blkMode.CryptBlocks(crypted, d)
-
-	s := []byte{0x00, 0x18, 0x00, 0x08, 0x00, 0x46, 0xf0, 0x03, 0x01, 0x03, 0x22, 0xff, 0x00, 0x00}
-	s = append(s, crypted...)
-
-	_, err = md.call(s)
-
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return
 }
 
 func (md *NetMD) RequestDiscCapacity() (recorded uint64, total uint64, available uint64, err error) {
@@ -371,42 +214,6 @@ func (md *NetMD) RequestStatus() (disk bool, err error) {
 	return
 }
 
-func (md *NetMD) ForgetSecureKey() error {
-	_, err := md.call([]byte{0x00, 0x18, 0x00, 0x08, 0x00, 0x46, 0xf0, 0x03, 0x01, 0x03, 0x21, 0xff, 0x00, 0x00, 0x00})
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
-func (md *NetMD) LeaveSecureSession() error {
-	_, err := md.call([]byte{0x00, 0x18, 0x00, 0x08, 0x00, 0x46, 0xf0, 0x03, 0x01, 0x03, 0x81, 0xff})
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
-func (md *NetMD) EnterSecureSession() error {
-	_, err := md.call([]byte{0x00, 0x18, 0x00, 0x08, 0x00, 0x46, 0xf0, 0x03, 0x01, 0x03, 0x80, 0xff})
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
-func (md *NetMD) NewTrackProtection(i int16) error {
-	// 0 - enabled
-	// 1 - disabled
-	s := []byte{0x00, 0x18, 0x00, 0x08, 0x00, 0x46, 0xf0, 0x03, 0x01, 0x03, 0x2b, 0xff}
-	s = append(s, intToHex16(i)...)
-	_, err := md.call(s)
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
 func (md *NetMD) SyncTOC() error {
 	_, err := md.call([]byte{0x00, 0x18, 0x08, 0x10, 0x18, 0x02, 0x00, 0x00})
 	if err != nil {
@@ -447,20 +254,18 @@ func (md *NetMD) call(i []byte) ([]byte, error) {
 	if md.debug {
 		log.Printf("md.call send <- % x", i)
 	}
-	b, err := md.read()
-	if err != nil {
-		return nil, err
-	}
-	return b, nil
-}
 
-func (md *NetMD) read() ([]byte, error) {
 	for tries := 0; tries < 4; tries++ {
 		if h := md.poll(); h != -1 {
-			return md.receive(h)
+			b, err := md.receive(h)
+			if err != nil {
+				return nil, err
+			}
+			return b, nil
 		}
 		time.Sleep(time.Millisecond * 100)
 	}
+
 	return nil, errors.New("poll failed")
 }
 
@@ -471,11 +276,11 @@ func (md *NetMD) receive(s int) ([]byte, error) {
 	}
 	if md.debug {
 		if buf[0] == 0x0a {
-			return nil, errors.New("md.call rejected")
+			return nil, errors.New("controlIn was rejected")
 		} else if buf[0] == 0x09 {
-			log.Printf("md.call accepted -> % x", buf)
+			log.Print(" -> Accepted.")
 		} else if buf[0] == 0x0f {
-			log.Printf("md.call interim -> % x", buf)
+			log.Printf(" -> Interm...")
 		}
 	}
 	return buf, nil
@@ -484,9 +289,6 @@ func (md *NetMD) receive(s int) ([]byte, error) {
 func (md *NetMD) poll() int {
 	buf := make([]byte, 4)
 	md.dev.Control(gousb.ControlIn|gousb.ControlVendor|gousb.ControlInterface, 0x01, 0, 0, buf)
-	if md.debug {
-		log.Printf("raw-poll: % x", buf)
-	}
 	if buf[0] == 0x01 && buf[1] == 0x81 {
 		return int(buf[2])
 	}

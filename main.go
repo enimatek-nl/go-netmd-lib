@@ -8,7 +8,6 @@ import (
 	"log"
 )
 
-
 func main() {
 
 	ctx := gousb.NewContext()
@@ -42,17 +41,22 @@ func main() {
 			recorded, total, available, _ := md.RequestDiscCapacity()
 			log.Println(recorded, total, available)
 
-			encoding, _, _ := md.RecordingParameters()
-			switch encoding {
-			case netmd.ATRACSP:
-				log.Println("ATRAC SP")
-			case netmd.ATRAC3LP2:
-				log.Println("ATRAC3 LP2")
-			case netmd.ATRAC3LP4:
-				log.Println("ATRAC3 LP4")
+			//encoding, _, _ := md.RecordingParameters()
+
+			name := "big.wav"
+			//name := "demo.wav"
+
+			track, err := md.NewTrack(name, netmd.WfPCM, netmd.DfStereoSP)
+			if err != nil {
+				log.Fatal(err)
+			}
+			log.Printf("Prepared Track; frameSize: %d frames: %d padding: %d packets: %d", netmd.FrameSize[track.Format], track.Frames, track.Padding, len(track.Packets))
+
+			err = md.Send(track)
+			if err != nil {
+				log.Fatal(err)
 			}
 
-			md.PrepareSend()
 		}
 	}
 }

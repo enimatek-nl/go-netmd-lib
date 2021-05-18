@@ -40,6 +40,14 @@ func intToHex64(num int64) []byte {
 	return buff.Bytes()
 }
 
+func hexToInt16(b []byte) uint16 {
+	return binary.BigEndian.Uint16(b)
+}
+
+func hexToInt32(b []byte) uint32 {
+	return binary.BigEndian.Uint32(b)
+}
+
 func hexToInt(b byte) uint64 {
 	v, err := strconv.ParseUint(fmt.Sprintf("%x", b), 10, 8)
 	if err != nil {
@@ -50,13 +58,7 @@ func hexToInt(b byte) uint64 {
 
 /**
 DES ECB encryption in go
- */
-
-func ZeroPadding(ciphertext []byte, blockSize int) []byte {
-	padding := blockSize - len(ciphertext)%blockSize
-	padtext := bytes.Repeat([]byte{0}, padding)
-	return append(ciphertext, padtext...)
-}
+*/
 
 func DESEncrypt(src, key []byte) ([]byte, error) {
 	block, err := des.NewCipher(key)
@@ -64,7 +66,6 @@ func DESEncrypt(src, key []byte) ([]byte, error) {
 		return nil, err
 	}
 	bs := block.BlockSize()
-	src = ZeroPadding(src, bs)
 	if len(src)%bs != 0 {
 		return nil, errors.New("Need a multiple of the blocksize")
 	}
@@ -76,13 +77,6 @@ func DESEncrypt(src, key []byte) ([]byte, error) {
 		dst = dst[bs:]
 	}
 	return out, nil
-}
-
-func ZeroUnPadding(origData []byte) []byte {
-	return bytes.TrimFunc(origData,
-		func(r rune) bool {
-			return r == rune(0)
-		})
 }
 
 func DESDecrypt(src, key []byte) ([]byte, error) {
@@ -101,6 +95,5 @@ func DESDecrypt(src, key []byte) ([]byte, error) {
 		src = src[bs:]
 		dst = dst[bs:]
 	}
-	out = ZeroUnPadding(out)
 	return out, nil
 }
