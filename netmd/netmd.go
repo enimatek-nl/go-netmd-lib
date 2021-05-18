@@ -86,40 +86,43 @@ func (md *NetMD) Send(trk *Track) (err error) {
 	}
 
 	dataCounter := 0
-	outStream, err := md.out.NewStream(totalBytes, 1)
-	for _, p := range trk.Packets {
+	for i, p := range trk.Packets {
 		s := make([]byte, 0)
 		if p.first {
-			s = append(s, intToHex64(int64(len(p.data)))...)
+			s = append(s, intToHex64(int64(trk.Frames*FrameSize[trk.Format]))...)
 			s = append(s, key...)
 			s = append(s, md.ekb.iv...)
 		}
 		s = append(s, p.data...)
-		i, err := outStream.Write(s)
+		t, err := md.out.Write(s)
 		if err != nil {
 			log.Fatal(err)
 		}
-		dataCounter += i
-		log.Printf("Transmitted %d / %d", dataCounter, totalBytes)
+		dataCounter += t
+		log.Printf("Packet %d / %d Transmitted: %d bytes", i, len(trk.Packets), dataCounter)
 	}
-	outStream.Close()
-
-	// TODO: set time-out on this?
+	
 	log.Println("waiting for MD to finish data write")
-	i := md.poll()
-	for i == -1 {
+	i := -1
+	for t := 0; t < 99; t++ {
 		i = md.poll()
+		if i != -1 {
+			break
+		}
 		time.Sleep(time.Millisecond * 250)
 	}
+
 	r, err := md.receive(i)
 	if err != nil {
 		log.Fatal(err)
 	}
-	log.Printf("%d : % x", i, r)
+	if md.debug {
+		log.Printf("Encrypted Reply: % x", r)
+	}
 
 	trackNr := hexToInt16(r[17:19])
 	if md.debug {
-		log.Printf("track# to commit: %d", trackNr)
+		log.Printf("track %d to committed", trackNr)
 	}
 
 	//decoderBlock, err := des.NewCipher(sessionKey)
