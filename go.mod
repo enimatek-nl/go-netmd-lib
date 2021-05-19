@@ -1,4 +1,4 @@
-module gomd
+module github.com/enimatek-nl/go-netmd-lib
 
 go 1.16
 
