@@ -11,7 +11,7 @@ I tried to simplify most code in a 'go' manner so understanding the NetMD protoc
 ## example
 In this example we send a wav file to the NetMD device and give the new track a name.
 ```go
-md, err := gonetmd.NewNetMD(0, true)
+md, err := netmd.NewNetMD(0, true)
 if err != nil {
     log.Fatal(err)
 }
