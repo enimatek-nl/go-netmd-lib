@@ -1,4 +1,4 @@
-package gomd
+package gonetmd
 
 import "math/rand"
 
