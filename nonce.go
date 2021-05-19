@@ -1,4 +1,4 @@
-package gonetmd
+package netmd
 
 import "math/rand"
 
