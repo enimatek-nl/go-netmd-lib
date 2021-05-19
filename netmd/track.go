@@ -7,13 +7,14 @@ import (
 )
 
 type Track struct {
+	Title      string
 	Format     WireFormat
-	discFormat DiscFormat
+	DiscFormat DiscFormat
 	Frames     int
 	Padding    int
+	Packets    []*Packet
 	position   int
 	key        []byte
-	Packets    []*Packet
 }
 
 type Packet struct {
@@ -43,14 +44,15 @@ var (
 	}
 )
 
-func (md *NetMD) NewTrack(fn string, wf WireFormat, df DiscFormat) (trk *Track, err error) {
+func (md *NetMD) NewTrack(title string, fileName string, wf WireFormat, df DiscFormat) (trk *Track, err error) {
 	trk = &Track{
+		Title:      title,
 		Format:     wf,
-		discFormat: df,
+		DiscFormat: df,
 		key:        md.ekb.CreateKey(),
 	}
 
-	file, err := os.Open(fn)
+	file, err := os.Open(fileName)
 	defer file.Close()
 	if err != nil {
 		return
@@ -74,7 +76,7 @@ func (md *NetMD) NewTrack(fn string, wf WireFormat, df DiscFormat) (trk *Track, 
 			c += 1
 			s = audioData[c : c+4]
 		}
-		audioData = audioData[c+8:] // cut header & byte-swap the audio data
+		audioData = audioData[c+8:] // cut header & byte-swap the audio data (need source on 'why the swap?')
 		for i := 0; i < len(audioData); i += 2 {
 			first := audioData[i]
 			audioData[i] = audioData[i+1]

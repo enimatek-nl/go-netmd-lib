@@ -9,7 +9,9 @@ import (
 
 type NetMD struct {
 	debug bool
-	dev   *gousb.Device
+	index int
+	devs  []*gousb.Device
+	ctx   *gousb.Context
 	out   *gousb.OutEndpoint
 	ekb   *EKB
 }
@@ -31,14 +33,37 @@ var (
 	ByteArr16 = []byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
 )
 
-func NewNetMD(dev *gousb.Device, debug bool) (md *NetMD, err error) {
+func NewNetMD(index int, debug bool) (md *NetMD, err error) {
 	md = &NetMD{
-		dev:   dev,
+		index: index,
 		debug: debug,
 		ekb:   NewEKB(),
 	}
-	for num := range md.dev.Desc.Configs {
-		config, _ := md.dev.Config(num)
+
+	md.ctx = gousb.NewContext()
+	md.devs, err = md.ctx.OpenDevices(func(desc *gousb.DeviceDesc) bool {
+		for _, d := range Devices {
+			if d.deviceId == desc.Product && d.vendorId == desc.Vendor {
+				if md.debug {
+					log.Printf("Found %s", d.name)
+				}
+				return true
+			}
+		}
+		return false
+	})
+
+	if err != nil {
+		return
+	}
+
+	if len(md.devs) == 0 || len(md.devs) <= md.index {
+		err = errors.New("no compatible netmd device found or incorrect index")
+		return
+	}
+
+	for num := range md.devs[md.index].Desc.Configs {
+		config, _ := md.devs[md.index].Config(num)
 		for _, desc := range config.Desc.Interfaces {
 			intf, _ := config.Interface(desc.Number, 0)
 			for _, endpointDesc := range intf.Setting.Endpoints {
@@ -57,6 +82,13 @@ func NewNetMD(dev *gousb.Device, debug bool) (md *NetMD, err error) {
 	return
 }
 
+func (md *NetMD) Close() {
+	for _, d := range md.devs {
+		d.Close()
+	}
+	md.ctx.Close()
+}
+
 // Send will transmit the Track data encrypted to the NetMD
 func (md *NetMD) Send(trk *Track) (err error) {
 	// housekeeping
@@ -73,7 +105,7 @@ func (md *NetMD) Send(trk *Track) (err error) {
 	md.kekExchange(sessionKey)          // (data) key encryption key
 
 	totalBytes := (trk.Frames * FrameSize[trk.Format]) + 24
-	err = md.initSecureSend(trk.Format, trk.discFormat, trk.Frames, totalBytes)
+	err = md.initSecureSend(trk.Format, trk.DiscFormat, trk.Frames, totalBytes)
 	if err != nil {
 		return
 	}
@@ -113,7 +145,7 @@ func (md *NetMD) Send(trk *Track) (err error) {
 		return
 	}
 	if md.debug {
-		log.Printf("Encrypted Reply: % x", r) // TODO: decode this? it's not really used.
+		log.Printf("Encrypted Reply: % x", r) // why decode this? it's not really used...
 	}
 
 	trackNr := hexToInt16(r[17:19])
@@ -121,14 +153,17 @@ func (md *NetMD) Send(trk *Track) (err error) {
 		log.Printf("track %d committed", trackNr)
 	}
 
-	err = md.CacheTOC()
+	err = md.cacheTOC()
 	if err != nil {
 		return
 	}
 
-	// TODO: set trackname? need to create these functions first
+	err = md.SetTrackTitle(int(trackNr), trk.Title, true)
+	if err != nil {
+		return
+	}
 
-	err = md.SyncTOC()
+	err = md.syncTOC()
 	if err != nil {
 		return
 	}
@@ -142,22 +177,6 @@ func (md *NetMD) Send(trk *Track) (err error) {
 	md.release()
 
 	return
-}
-
-func (md *NetMD) SyncTOC() error {
-	_, err := md.call([]byte{0x00, 0x18, 0x08, 0x10, 0x18, 0x02, 0x00, 0x00})
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
-func (md *NetMD) CacheTOC() error {
-	_, err := md.call([]byte{0x00, 0x18, 0x08, 0x10, 0x18, 0x02, 0x03, 0x00})
-	if err != nil {
-		return err
-	}
-	return nil
 }
 
 // RequestDiscCapacity returns the totals in seconds
@@ -180,8 +199,11 @@ func (md *NetMD) SetDiscHeader(t string) error {
 	}
 	j := len(o) // length of old title
 	h := len(t) // length of new title
-	c := []byte{0x00, 0x18, 0x07, 0x02, 0x20, 0x18, 0x01, 0x00, 0x00, 0x30, 0x00, 0x0a, 0x00, 0x50, 0x00, 0x00, byte(h) & 0xff, 0x00, 0x00, 0x00, byte(j) & 0xff}
-	c = append(c, []byte(t)...) // append actual title data
+	c := []byte{0x00, 0x18, 0x07, 0x02, 0x20, 0x18, 0x01, 0x00, 0x00, 0x30, 0x00, 0x0a, 0x00, 0x50, 0x00}
+	c = append(c, intToHex16(int16(h))...)
+	c = append(c, 0x00, 0x00)
+	c = append(c, intToHex16(int16(j))...)
+	c = append(c, []byte(t)...)
 	_, err = md.call(c)
 	if err != nil {
 		return err
@@ -221,22 +243,35 @@ func (md *NetMD) RequestStatus() (disk bool, err error) {
 
 // RequestTrackTitle returns the raw title of the trk number starting from 0
 func (md *NetMD) RequestTrackTitle(trk int) (t string, err error) {
-	// TODO
-	r, err := md.call([]byte{0x00, 0x18, 0x06, 0x02, 0x20, 0x18, 0x01, 0x00, byte(trk) & 0xff, 0x30, 0x00, 0x0a, 0x00, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00})
+	r, err := md.call([]byte{0x00, 0x18, 0x06, 0x02, 0x20, 0x18, byte(2) & 0xff, 0x00, byte(trk) & 0xff, 0x30, 0x00, 0x0a, 0x00, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00})
 	if err != nil {
 		return
 	}
-	t = string(r[0:])
+	t = string(r[25:])
 	return
 }
 
-// SetTrackTitle set the title of the trk number starting from 0
-func (md *NetMD) SetTrackTitle(trk int, t string) {
-	// TODO
-	s := []byte{0x00,0x18,0x07,0x02,0x20,0x18 ,0x02}
-	s = append(s, intToHex16(int16(trk))...)
-	s = append(s, []byte{0x30,0x00 ,0x0a,0x00 ,0x50,0x00}...)
-	// oldLen ,0x00,0x00 newLen t
+// SetTrackTitle set the title of the trk number starting from 0, isNew can be be true if it's a newadded track
+func (md *NetMD) SetTrackTitle(trk int, t string, isNew bool) (err error) {
+	j := 0
+	if !isNew {
+		o, err := md.RequestTrackTitle(trk)
+		if err != nil {
+			return err
+		}
+		j = len(o) // length of old title
+	}
+	h := len(t) // length of new title
+	s := []byte{0x00, 0x18, 0x07, 0x02, 0x20, 0x18, byte(2) & 0xff, 0x00, byte(trk) & 0xff, 0x30, 0x00, 0x0a, 0x00, 0x50, 0x00}
+	s = append(s, intToHex16(int16(h))...)
+	s = append(s, 0x00, 0x00)
+	s = append(s, intToHex16(int16(j))...)
+	s = append(s, []byte(t)...)
+	_, err = md.call(s)
+	if err != nil {
+		return
+	}
+	return
 }
 
 // EraseTrack will erase the trk number starting from 0
@@ -254,7 +289,7 @@ func (md *NetMD) EraseTrack(trk int) error {
 func (md *NetMD) MoveTrack(trk, to int) error {
 	s := []byte{0x00, 0x18, 0x43, 0xff, 0x00, 0x00, 0x20, 0x10, 0x01}
 	s = append(s, intToHex16(int16(trk))...)
-	s = append(s, []byte{0x20, 0x10, 0x01}...)
+	s = append(s, 0x20, 0x10, 0x01)
 	s = append(s, intToHex16(int16(to))...)
 	_, err := md.call(s)
 	if err != nil {
@@ -267,7 +302,7 @@ func (md *NetMD) MoveTrack(trk, to int) error {
 func (md *NetMD) RequestTrackLength(trk int) (duration uint64, err error) {
 	s := []byte{0x00, 0x18, 0x06, 0x02, 0x20, 0x10, 0x01}
 	s = append(s, intToHex16(int16(trk))...)
-	s = append(s, []byte{0x30, 0x00, 0x01, 0x00, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00}...)
+	s = append(s, 0x30, 0x00, 0x01, 0x00, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00)
 	r, err := md.call(s)
 	if err != nil {
 		return
@@ -280,7 +315,7 @@ func (md *NetMD) RequestTrackLength(trk int) (duration uint64, err error) {
 func (md *NetMD) RequestTrackEncoding(trk int) (encoding Encoding, err error) {
 	s := []byte{0x00, 0x18, 0x06, 0x02, 0x20, 0x10, 0x01}
 	s = append(s, intToHex16(int16(trk))...)
-	s = append(s, []byte{0x30, 0x80, 0x07, 0x00, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00}...)
+	s = append(s, 0x30, 0x80, 0x07, 0x00, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00)
 	r, err := md.call(s)
 	if err != nil {
 		return
@@ -290,7 +325,7 @@ func (md *NetMD) RequestTrackEncoding(trk int) (encoding Encoding, err error) {
 
 func (md *NetMD) call(i []byte) ([]byte, error) {
 	md.poll()
-	if _, err := md.dev.Control(gousb.ControlOut|gousb.ControlVendor|gousb.ControlInterface, 0x80, 0, 0, i); err != nil {
+	if _, err := md.devs[md.index].Control(gousb.ControlOut|gousb.ControlVendor|gousb.ControlInterface, 0x80, 0, 0, i); err != nil {
 		return nil, err
 	}
 	if md.debug {
@@ -313,7 +348,7 @@ func (md *NetMD) call(i []byte) ([]byte, error) {
 
 func (md *NetMD) receive(s int) ([]byte, error) {
 	buf := make([]byte, s)
-	if _, err := md.dev.Control(gousb.ControlIn|gousb.ControlVendor|gousb.ControlInterface, 0x81, 0, 0, buf); err != nil {
+	if _, err := md.devs[md.index].Control(gousb.ControlIn|gousb.ControlVendor|gousb.ControlInterface, 0x81, 0, 0, buf); err != nil {
 		return nil, err
 	}
 	if md.debug {
@@ -322,7 +357,7 @@ func (md *NetMD) receive(s int) ([]byte, error) {
 		} else if buf[0] == 0x09 {
 			log.Print(" -> Accepted.")
 		} else if buf[0] == 0x0f {
-			log.Printf(" -> Interm...")
+			log.Printf(" -> Interim <-")
 		}
 	}
 	return buf, nil
@@ -330,7 +365,7 @@ func (md *NetMD) receive(s int) ([]byte, error) {
 
 func (md *NetMD) poll() int {
 	buf := make([]byte, 4)
-	md.dev.Control(gousb.ControlIn|gousb.ControlVendor|gousb.ControlInterface, 0x01, 0, 0, buf)
+	md.devs[md.index].Control(gousb.ControlIn|gousb.ControlVendor|gousb.ControlInterface, 0x01, 0, 0, buf)
 	if buf[0] == 0x01 && buf[1] == 0x81 {
 		return int(buf[2])
 	}
