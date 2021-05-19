@@ -17,7 +17,7 @@ if err != nil {
 }
 defer md.Close()
 
-track, err := md.NewTrack("My Song", "song.wav", gonetmd.WfPCM, gonetmd.DfStereoSP)
+track, err := md.NewTrack("My Song", "song.wav", netmd.WfPCM, netmd.DfStereoSP)
 if err != nil {
     log.Fatal(err)
 }
