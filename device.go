@@ -1,4 +1,4 @@
-package netmd
+package gomd
 
 import "github.com/google/gousb"
 
