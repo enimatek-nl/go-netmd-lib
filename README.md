@@ -9,9 +9,9 @@ I tried to simplify most code in a 'go' manner so understanding the NetMD protoc
 `go get github.com/enimatek-nl/go-netmd-lib`
 
 ## example
-In this example we send a wav file to the NetMD device and give the new track a name.
+In this example we send a stereo pcm file to the NetMD device concurrent.
 ```go
-md, err := netmd.NewNetMD(0, true)
+md, err := netmd.NewNetMD(0, false)
 if err != nil {
     log.Fatal(err)
 }
@@ -22,11 +22,24 @@ if err != nil {
     log.Fatal(err)
 }
 
-err = md.Send(track)
-if err != nil {
-    log.Fatal(err)
-}
+c := make(chan netmd.Transfer)
+go md.Send(track, c)
 
+for{
+    res, ok := <-c
+    if !ok {
+        break
+    }
+    if res.Error != nil {
+        log.Fatal(res.Error)
+    }
+    switch res.Type {
+    case netmd.TtSend:
+        log.Printf("Transferred %d of %d bytes", res.Transferred, track.TotalBytes())
+    case netmd.TtTrack:
+        log.Printf("Created a new track # %d ", res.Track)
+    }
+}
 ```
 
 ## todo

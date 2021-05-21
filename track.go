@@ -44,6 +44,10 @@ var (
 	}
 )
 
+func (trk *Track) TotalBytes() int {
+	return (trk.Frames * FrameSize[trk.Format]) + 24
+}
+
 func (md *NetMD) NewTrack(title string, fileName string, wf WireFormat, df DiscFormat) (trk *Track, err error) {
 	trk = &Track{
 		Title:      title,
