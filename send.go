@@ -92,7 +92,7 @@ func (md *NetMD) Send(trk *Track, c chan Transfer) {
 		log.Println("Waiting for MD to finish data write...")
 	}
 	i := -1
-	for t := 0; t < 99; t++ {
+	for t := 0; t < 150; t++ { // 30s timeout.
 		i = md.poll()
 		if i != -1 {
 			break
@@ -100,7 +100,7 @@ func (md *NetMD) Send(trk *Track, c chan Transfer) {
 		c <- Transfer{
 			Type: TtPoll,
 		}
-		time.Sleep(time.Millisecond * 250)
+		time.Sleep(time.Millisecond * 200)
 	}
 	if i == -1 {
 		c <- Transfer{
