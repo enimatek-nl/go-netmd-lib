@@ -3,6 +3,8 @@ package netmd
 import (
 	"crypto/cipher"
 	"crypto/des"
+	"errors"
+	"fmt"
 	"os"
 )
 
@@ -48,11 +50,11 @@ func (trk *Track) TotalBytes() int {
 	return (trk.Frames * FrameSize[trk.Format]) + 24
 }
 
-func (md *NetMD) NewTrack(title string, fileName string, wf WireFormat, df DiscFormat) (trk *Track, err error) {
+func (md *NetMD) NewTrack(title string, fileName string) (trk *Track, err error) {
 	trk = &Track{
+		Format:     WfPCM,
+		DiscFormat: DfStereoSP,
 		Title:      title,
-		Format:     wf,
-		DiscFormat: df,
 		key:        md.ekb.CreateKey(),
 	}
 
@@ -71,21 +73,44 @@ func (md *NetMD) NewTrack(title string, fileName string, wf WireFormat, df DiscF
 		return
 	}
 
-	// some housekeeping on pcm wav data
-	if trk.Format == WfPCM {
-		// search for wav 'data' header
-		c := 0
-		s := audioData[c : c+4]
-		for string(s) != "data" {
-			c += 1
-			s = audioData[c : c+4]
+	if string(audioData[0:4]) != "RIFF" {
+		return nil, errors.New("not a valid wav container")
+	}
+
+	if audioData[20] == 0x70 && audioData[21] == 0x02 {
+		bs := hexToInt16LE(audioData[32:34])
+		if bs == 384 {
+			trk.Format = WfLP2
+			trk.DiscFormat = DfLP2
+		} else {
+			return nil, errors.New(fmt.Sprintf("ATRAC3 block size %d not supported", bs))
 		}
-		audioData = audioData[c+8:] // cut header & byte-swap the audio data (need source on 'why the swap?')
+	}
+
+	// search for wav 'data' header
+	c := 0
+	s := audioData[c : c+4]
+	for string(s) != "data" {
+		c += 1
+		s = audioData[c : c+4]
+	}
+	if string(s) != "data" {
+		return nil, errors.New("corrupt wav container")
+	}
+	audioData = audioData[c+8:] // cut header
+
+	switch trk.Format {
+	case WfPCM:
+		// byte-swap the audio data (need source on 'why the swap?')
 		for i := 0; i < len(audioData); i += 2 {
 			first := audioData[i]
 			audioData[i] = audioData[i+1]
 			audioData[i+1] = first
 		}
+	case WfLP2:
+		break
+	case WfLP4:
+		return nil, errors.New("LP4 is currently not supported")
 	}
 
 	// add padding when data length does not fit the frame size
@@ -94,7 +119,7 @@ func (md *NetMD) NewTrack(title string, fileName string, wf WireFormat, df DiscF
 		audioData = append(audioData, make([]byte, trk.Padding)...)
 	}
 
-	trk.Frames = len(audioData) / FrameSize[wf]
+	trk.Frames = len(audioData) / FrameSize[trk.Format]
 
 	cipherBlock, err := des.NewCipher(trk.key)
 	if err != nil {
@@ -106,7 +131,7 @@ func (md *NetMD) NewTrack(title string, fileName string, wf WireFormat, df DiscF
 
 	for trk.position < len(audioData) {
 
-		chunkSize := 0x00100000
+		chunkSize := 0x80000 //0x00100000
 		if trk.position == 0 {
 			chunkSize -= 24
 		}

@@ -44,8 +44,8 @@ func hexToInt16(b []byte) uint16 {
 	return binary.BigEndian.Uint16(b)
 }
 
-func hexToInt32(b []byte) uint32 {
-	return binary.BigEndian.Uint32(b)
+func hexToInt16LE(b []byte) uint16 {
+	return binary.LittleEndian.Uint16(b)
 }
 
 func hexToInt(b byte) uint64 {

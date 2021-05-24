@@ -17,9 +17,16 @@ if err != nil {
 }
 defer md.Close()
 
-track, err := md.NewTrack("My Song", "song.wav", netmd.WfPCM, netmd.DfStereoSP)
+track, err := md.NewTrack("My Song", "song.wav")
 if err != nil {
     log.Fatal(err)
+}
+
+switch track.Format {
+case netmd.WfPCM:
+    log.Println("PCM detected")
+case netmd.WfLP2:
+    log.Println("LP2 detected")
 }
 
 c := make(chan netmd.Transfer)
@@ -45,4 +52,4 @@ for{
 ## todo
 The library has only been tested with my Sony NH600.
 
-Some functions (sending LP2/LP4 and title/group/parsing) are not implemented yet.
+Some functions (eg. groups parsing of titles) are not implemented yet.
