@@ -28,28 +28,30 @@ func (md *NetMD) Send(trk *Track, c chan Transfer) {
 	if c == nil {
 		return
 	}
+	defer close(c)
 
 	// housekeeping
-	md.forgetSecureKey()
+	md.acquire()
 	md.leaveSecureSession()
+	md.trackProtection(0x01) // not implemented in sharp
+	//md.forgetSecureKey()
 
 	c <- Transfer{
 		Type: TtSetup,
 	}
 
 	// set up the secure session
-	md.acquire()
-	err := md.trackProtection(0x01)
-	if err != nil {
-		log.Println(err) // fails on sharp?
-	}
+	//md.rawCall([]byte{0x00, 0x18, 0x08, 0x10, 0x10, 0x01, 0x03}, []byte{0x00})
+
+	//md.rawCall([]byte{0x00, 0x18, 0x08, 0x10, 0x10, 0x01, 0x00}, []byte{0x00})
 	md.enterSecureSession()
+
 	md.sendKeyData()
 	md.sessionKeyExchange()
 	sessionKey, _ := md.ekb.RetailMAC() // build the local sessionKey
 	md.kekExchange(sessionKey)          // (data) key encryption key
 
-	err = md.initSecureSend(trk.Format, trk.DiscFormat, trk.Frames, trk.TotalBytes())
+	err := md.initSecureSend(trk.Format, trk.DiscFormat, trk.Frames, trk.TotalBytes())
 	if err != nil {
 		c <- Transfer{
 			Error: err,
@@ -133,20 +135,33 @@ func (md *NetMD) Send(trk *Track, c chan Transfer) {
 
 	err = md.cacheTOC()
 	if err != nil {
+		c <- Transfer{
+			Error: errors.New("toc cache failed"),
+		}
 		return
 	}
 
 	err = md.SetTrackTitle(trackNr, trk.Title, true)
 	if err != nil {
+		c <- Transfer{
+			Error: errors.New("setting track title failed"),
+		}
 		return
 	}
 
 	err = md.syncTOC()
 	if err != nil {
+		c <- Transfer{
+			Error: errors.New("toc sync failed"),
+		}
 		return
 	}
-	err = md.commitTrack(trackNr, sessionKey)
+
+	err = md.commitTrack(trackNr, sessionKey) // not implemented in sharp
 	if err != nil {
+		c <- Transfer{
+			Error: errors.New("committing track failed"),
+		}
 		return
 	}
 
@@ -154,6 +169,5 @@ func (md *NetMD) Send(trk *Track, c chan Transfer) {
 	md.leaveSecureSession()
 	md.release()
 
-	close(c)
 	return
 }

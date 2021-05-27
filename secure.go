@@ -13,24 +13,6 @@ var (
 	NetHeaderSec = []byte{0x00, 0x18, 0x00, 0x08, 0x00, 0x46, 0xf0, 0x03, 0x01, 0x03}
 )
 
-// acquire is part of SHARP NetMD protocols and probably do nothing on Sony devices
-func (md *NetMD) acquire() error {
-	_, err := md.securePoll([]byte{0x00, 0xff, 0x01, 0x0c, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}, 0xff, []byte{0xff, 0xff, 0xff, 0xff, 0xff})
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
-// release is part of the acquire lifecycle
-func (md *NetMD) release() error {
-	_, err := md.securePoll([]byte{0x00, 0xff, 0x01, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}, 0xff, []byte{0xff, 0xff, 0xff, 0xff, 0xff})
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
 func (md *NetMD) syncTOC() error {
 	_, err := md.securePoll([]byte{0x00, 0x18, 0x08, 0x10, 0x18, 0x02}, 0x00, []byte{0x00})
 	if err != nil {
@@ -143,32 +125,34 @@ func (md *NetMD) initSecureSend(format WireFormat, discFormat DiscFormat, frames
 }
 
 func (md *NetMD) commitTrack(trk int, sessionKey []byte) error {
-	auth, err := DESEncrypt(ByteArr16, sessionKey)
+	auth, err := DESEncrypt(ByteArr16[:8], sessionKey[:8])
 	if err != nil {
 		return err
 	}
 	s := []byte{0xff, 0x00, 0x10, 0x01}
 	s = append(s, intToHex16(int16(trk))...)
-	s = append(s, auth...)
+	s = append(s, auth[:8]...)
+	md.Wait()
 	_, err = md.securePoll(NetHeaderSec, 0x48, s)
 	if err != nil {
 		return err
 	}
+	md.Wait()
 	return nil
 }
 
 func (md *NetMD) securePoll(header []byte, chk byte, payload []byte) (r []byte, err error) {
 	a := append(header, chk)
 	a = append(a, payload...)
-	md.poll()
 	pos := len(header)
 	if md.debug {
 		log.Printf("chk: %x @pos: %d <- % x", chk, pos, a)
 	}
+	md.poll()
 	if _, err := md.devs[md.index].Control(gousb.ControlOut|gousb.ControlVendor|gousb.ControlInterface, 0x80, 0, 0, a); err != nil {
 		return nil, err
 	}
-	for tries := 0; tries < 100; tries++ {
+	for tries := 0; tries < 150; tries++ {
 		if h := md.poll(); h != -1 {
 			b, err := md.receive(h)
 			if err != nil {
@@ -178,7 +162,7 @@ func (md *NetMD) securePoll(header []byte, chk byte, payload []byte) (r []byte, 
 				return b, nil
 			}
 		}
-		time.Sleep(time.Millisecond * 100)
+		time.Sleep(time.Millisecond * 150)
 	}
 
 	return nil, errors.New("poll failed")

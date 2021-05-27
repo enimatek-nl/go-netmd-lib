@@ -90,14 +90,32 @@ func (md *NetMD) Close() {
 	md.ctx.Close()
 }
 
-func (md *NetMD) Flush() {
-	for i := 0; i < 3; i++ {
-		md.poll()
+// Wait makes sure the device is truly finished, needed to prevent crashes on the SHARP IM-DR410/IM-DR420
+// and the Sony MZ-N420D
+func (md *NetMD) Wait() error {
+	buf := make([]byte, 4)
+	for i := 0; i < 10; i++ {
+		c, err := md.devs[md.index].Control(gousb.ControlIn|gousb.ControlVendor|gousb.ControlInterface, 0x01, 0, 0, buf)
+		if err != nil {
+			return err
+		}
+		if c != 4 {
+			if md.debug {
+				log.Println("sync response != 4 bytes")
+			}
+		} else {
+			if bytes.Equal(buf, []byte{0x00, 0x00, 0x00, 0x00}) {
+				return nil
+			}
+		}
+		time.Sleep(time.Millisecond * 100)
 	}
+	return errors.New("no sync response")
 }
 
 // RequestDiscCapacity returns the totals in seconds
 func (md *NetMD) RequestDiscCapacity() (recorded uint64, total uint64, available uint64, err error) {
+	md.release()
 	r, err := md.rawCall([]byte{0x00, 0x18, 0x06, 0x02, 0x10, 0x10, 0x00}, []byte{0x30, 0x80, 0x03, 0x00, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00})
 	if err != nil {
 		return
@@ -165,6 +183,7 @@ func (md *NetMD) RequestStatus() (disk bool, err error) {
 }
 
 func (md *NetMD) RequestTrackCount() (c int, err error) {
+	_, err = md.rawCall([]byte{0x00, 0x18, 0x08, 0x10, 0x10, 0x01, 0x01}, []byte{0x00})
 	r, err := md.rawCall([]byte{0x00, 0x18, 0x06, 0x02, 0x10, 0x10, 0x01}, []byte{0x30, 0x00, 0x10, 0x00, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00})
 	if err != nil {
 		return
@@ -199,10 +218,18 @@ func (md *NetMD) SetTrackTitle(trk int, t string, isNew bool) (err error) {
 	s = append(s, 0x00, 0x00)
 	s = append(s, intToHex16(int16(j))...)
 	s = append(s, []byte(t)...)
-	_, err = md.rawCall([]byte{0x00, 0x18, 0x08, 0x10, 0x18, 0x02, 0x00}, []byte{0x00})
-	_, err = md.rawCall([]byte{0x00, 0x18, 0x08, 0x10, 0x18, 0x02, 0x03}, []byte{0x00})
+
+	if !isNew {
+		_, err = md.rawCall([]byte{0x00, 0x18, 0x08, 0x10, 0x18, 0x02, 0x00}, []byte{0x00})
+		_, err = md.rawCall([]byte{0x00, 0x18, 0x08, 0x10, 0x18, 0x02, 0x03}, []byte{0x00})
+	}
+
 	_, err = md.rawCall([]byte{0x00, 0x18, 0x07, 0x02, 0x20, 0x18, byte(2) & 0xff}, s)
-	_, err = md.rawCall([]byte{0x00, 0x18, 0x08, 0x10, 0x18, 0x02, 0x00}, []byte{0x00})
+
+	if !isNew {
+		_, err = md.rawCall([]byte{0x00, 0x18, 0x08, 0x10, 0x18, 0x02, 0x00}, []byte{0x00})
+	}
+
 	if err != nil {
 		return
 	}
@@ -259,12 +286,13 @@ func (md *NetMD) RequestTrackEncoding(trk int) (encoding Encoding, err error) {
 
 func (md *NetMD) rawCall(chk []byte, payload []byte) ([]byte, error) {
 	i := append(chk, payload...)
+	if md.debug {
+		log.Printf("md.rawCall send <- % x", i)
+	}
+
 	md.poll()
 	if _, err := md.devs[md.index].Control(gousb.ControlOut|gousb.ControlVendor|gousb.ControlInterface, 0x80, 0, 0, i); err != nil {
 		return nil, err
-	}
-	if md.debug {
-		log.Printf("md.rawCall send <- % x", i)
 	}
 
 	for tries := 0; tries < 10; tries++ {
@@ -288,6 +316,24 @@ func (md *NetMD) rawCall(chk []byte, payload []byte) ([]byte, error) {
 	return nil, errors.New("poll failed")
 }
 
+// acquire is part of SHARP NetMD protocols and probably do nothing on Sony devices
+func (md *NetMD) acquire() error {
+	_, err := md.rawCall([]byte{0x00, 0xff, 0x01}, []byte{0x0c, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff})
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+// release is part of the acquire lifecycle
+func (md *NetMD) release() error {
+	_, err := md.rawCall([]byte{0x00, 0xff, 0x01}, []byte{0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff})
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
 func (md *NetMD) receive(s int) ([]byte, error) {
 	buf := make([]byte, s)
 	if _, err := md.devs[md.index].Control(gousb.ControlIn|gousb.ControlVendor|gousb.ControlInterface, 0x81, 0, 0, buf); err != nil {
@@ -295,11 +341,14 @@ func (md *NetMD) receive(s int) ([]byte, error) {
 	}
 	if md.debug {
 		if buf[0] == 0x0a {
+			log.Printf(" -> Rejected -> % x", buf)
 			return nil, errors.New("controlIn was rejected")
 		} else if buf[0] == 0x09 {
 			log.Printf(" -> Accepted -> % x", buf)
 		} else if buf[0] == 0x0f {
 			log.Printf(" -> Interim <-")
+		} else if buf[0] == 0x08 {
+			log.Printf(" -> notImplemented <-")
 		} else {
 			log.Printf(" -> Unknown  -> % x", buf)
 		}
@@ -310,7 +359,7 @@ func (md *NetMD) receive(s int) ([]byte, error) {
 func (md *NetMD) poll() int {
 	buf := make([]byte, 4)
 	md.devs[md.index].Control(gousb.ControlIn|gousb.ControlVendor|gousb.ControlInterface, 0x01, 0, 0, buf)
-	if buf[0] == 0x01 && buf[1] == 0x81 {
+	if buf[0] == 0x01 { //&& buf[1] == 0x81
 		return int(buf[2])
 	}
 	return -1
