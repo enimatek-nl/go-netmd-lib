@@ -39,14 +39,17 @@ func (md *NetMD) Send(trk *Track, c chan Transfer) {
 
 	// set up the secure session
 	md.acquire()
-	md.trackProtection(0x01) // fails on sharp?
+	err := md.trackProtection(0x01)
+	if err != nil {
+		log.Println(err) // fails on sharp?
+	}
 	md.enterSecureSession()
 	md.sendKeyData()
 	md.sessionKeyExchange()
 	sessionKey, _ := md.ekb.RetailMAC() // build the local sessionKey
 	md.kekExchange(sessionKey)          // (data) key encryption key
 
-	err := md.initSecureSend(trk.Format, trk.DiscFormat, trk.Frames, trk.TotalBytes())
+	err = md.initSecureSend(trk.Format, trk.DiscFormat, trk.Frames, trk.TotalBytes())
 	if err != nil {
 		c <- Transfer{
 			Error: err,
