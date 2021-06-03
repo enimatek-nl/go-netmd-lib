@@ -243,9 +243,9 @@ func (md *NetMD) SetTrackTitle(trk int, t string, isNew bool) (err error) {
 
 // EraseTrack will erase the trk number starting from 0
 func (md *NetMD) EraseTrack(trk int) error {
-	s := []byte{0x10, 0x01}
+	s := []byte{0xff, 0x01, 0x00, 0x20, 0x10, 0x01}
 	s = append(s, intToHex16(int16(trk))...)
-	_, err := md.submit(ControlAccepted, []byte{0x18, 0x40, 0xff, 0x01, 0x00, 0x20}, s)
+	_, err := md.submit(ControlAccepted, []byte{0x18, 0x40}, s)
 	if err != nil {
 		return err
 	}
@@ -254,12 +254,12 @@ func (md *NetMD) EraseTrack(trk int) error {
 
 // MoveTrack will move the trk number to a new position
 func (md *NetMD) MoveTrack(trk, to int) error {
-	s := []byte{0x10, 0x01}
+	s := []byte{0xff, 0x00, 0x00, 0x20, 0x10, 0x01}
 	s = append(s, intToHex16(int16(trk))...)
 	s = append(s, 0x20, 0x10, 0x01)
 	s = append(s, intToHex16(int16(to))...)
 	_, err := md.submit(ControlAccepted, []byte{0x18, 0x08, 0x10, 0x10, 0x01, 0x00}, []byte{0x00})
-	_, err = md.submit(ControlAccepted, []byte{0x18, 0x43, 0xff, 0x00, 0x00, 0x20}, s)
+	_, err = md.submit(ControlAccepted, []byte{0x18, 0x43}, s)
 	if err != nil {
 		return err
 	}
@@ -268,10 +268,10 @@ func (md *NetMD) MoveTrack(trk, to int) error {
 
 // RequestTrackLength returns the duration in seconds of the trk starting from 0
 func (md *NetMD) RequestTrackLength(trk int) (duration uint64, err error) {
-	s := []byte{0x01}
+	s := []byte{0x02, 0x20, 0x10, 0x01}
 	s = append(s, intToHex16(int16(trk))...)
 	s = append(s, 0x30, 0x00, 0x01, 0x00, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00)
-	r, err := md.submit(ControlAccepted, []byte{0x18, 0x06, 0x02, 0x20, 0x10}, s)
+	r, err := md.submit(ControlAccepted, []byte{0x18, 0x06}, s)
 	if err != nil {
 		return
 	}
@@ -345,6 +345,10 @@ func (md *NetMD) receive(control Control, check []byte, c chan Transfer) ([]byte
 						log.Printf("?? not implemented: % x", recv[chkLen:])
 					}
 					return recv, nil
+				}
+			} else {
+				if md.debug {
+					log.Printf("-> !! incoming data: % x did not match check: % x", recv[1:chkLen], check)
 				}
 			}
 		}
