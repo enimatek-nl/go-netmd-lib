@@ -3,7 +3,6 @@ package netmd
 import (
 	"errors"
 	"log"
-	"time"
 )
 
 type TransferType string
@@ -34,16 +33,11 @@ func (md *NetMD) Send(trk *Track, c chan Transfer) {
 	md.acquire()
 	md.leaveSecureSession()
 	md.trackProtection(0x01) // not implemented in sharp
-	//md.forgetSecureKey()
 
 	c <- Transfer{
 		Type: TtSetup,
 	}
 
-	// set up the secure session
-	//md.rawCall([]byte{0x00, 0x18, 0x08, 0x10, 0x10, 0x01, 0x03}, []byte{0x00})
-
-	//md.rawCall([]byte{0x00, 0x18, 0x08, 0x10, 0x10, 0x01, 0x00}, []byte{0x00})
 	md.enterSecureSession()
 
 	md.sendKeyData()
@@ -51,7 +45,7 @@ func (md *NetMD) Send(trk *Track, c chan Transfer) {
 	sessionKey, _ := md.ekb.RetailMAC() // build the local sessionKey
 	md.kekExchange(sessionKey)          // (data) key encryption key
 
-	err := md.initSecureSend(trk.Format, trk.DiscFormat, trk.Frames, trk.TotalBytes())
+	err := md.startSecureSend(trk.Format, trk.DiscFormat, trk.Frames, trk.TotalBytes())
 	if err != nil {
 		c <- Transfer{
 			Error: err,
@@ -94,32 +88,15 @@ func (md *NetMD) Send(trk *Track, c chan Transfer) {
 	}
 
 	if md.debug {
-		log.Println("Waiting for MD to finish data write...")
+		log.Println("Going to wait for MD to finish data write...")
 	}
-	i := -1
-	for t := 0; t < 150; t++ { // 30s timeout.
-		i = md.poll()
-		if i != -1 {
-			break
-		}
-		c <- Transfer{
-			Type: TtPoll,
-		}
-		time.Sleep(time.Millisecond * 200)
-	}
-	if i == -1 {
+
+	r, err := md.finishSecureSend(c)
+	if err != nil {
 		c <- Transfer{
 			Error: errors.New("data write never finished"),
 		}
 		return
-	}
-
-	r, err := md.receive(i)
-	if err != nil {
-		return
-	}
-	if md.debug {
-		log.Printf("Encrypted Reply: % x", r) // why decode this? it's not really used...
 	}
 
 	j := hexToInt16(r[17:19])

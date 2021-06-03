@@ -21,6 +21,8 @@ type Encoding byte
 
 type Channels byte
 
+type Control byte
+
 const (
 	EncSP  Encoding = 0x90
 	EncLP2 Encoding = 0x92
@@ -28,6 +30,11 @@ const (
 
 	ChanStereo Channels = 0x00
 	ChanMono   Channels = 0x01
+
+	ControlRejected Control = 0x0a
+	ControlAccepted Control = 0x09
+	ControlInterim  Control = 0x0f
+	ControlStub     Control = 0x08
 )
 
 var (
@@ -90,8 +97,7 @@ func (md *NetMD) Close() {
 	md.ctx.Close()
 }
 
-// Wait makes sure the device is truly finished, needed to prevent crashes on the SHARP IM-DR410/IM-DR420
-// and the Sony MZ-N420D
+// Wait makes sure the device is truly finished, needed to prevent crashes on the SHARP IM-DR410/IM-DR420 and the Sony MZ-N420D
 func (md *NetMD) Wait() error {
 	buf := make([]byte, 4)
 	for i := 0; i < 10; i++ {
@@ -115,8 +121,7 @@ func (md *NetMD) Wait() error {
 
 // RequestDiscCapacity returns the totals in seconds
 func (md *NetMD) RequestDiscCapacity() (recorded uint64, total uint64, available uint64, err error) {
-	md.release()
-	r, err := md.rawCall([]byte{0x00, 0x18, 0x06, 0x02, 0x10, 0x10, 0x00}, []byte{0x30, 0x80, 0x03, 0x00, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00})
+	r, err := md.submit(ControlAccepted, []byte{0x18, 0x06, 0x02, 0x10, 0x10, 0x00}, []byte{0x30, 0x80, 0x03, 0x00, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00})
 	if err != nil {
 		return
 	}
@@ -140,11 +145,11 @@ func (md *NetMD) SetDiscHeader(t string) error {
 	c = append(c, 0x00, 0x00)
 	c = append(c, intToHex16(int16(j))...)
 	c = append(c, []byte(t)...)
-	_, err = md.rawCall([]byte{0x00, 0x18, 0x08, 0x10, 0x18, 0x01, 0x01}, []byte{0x00})
-	_, err = md.rawCall([]byte{0x00, 0x18, 0x08, 0x10, 0x18, 0x01, 0x00}, []byte{0x00})
-	_, err = md.rawCall([]byte{0x00, 0x18, 0x08, 0x10, 0x18, 0x01, 0x03}, []byte{0x00})
-	_, err = md.rawCall([]byte{0x00, 0x18, 0x07, 0x02, 0x20, 0x18, 0x01}, c) // actual call
-	_, err = md.rawCall([]byte{0x00, 0x18, 0x08, 0x10, 0x18, 0x01, 0x00}, []byte{0x00})
+	_, err = md.submit(ControlAccepted, []byte{0x18, 0x08, 0x10, 0x18, 0x01, 0x01}, []byte{0x00})
+	_, err = md.submit(ControlAccepted, []byte{0x18, 0x08, 0x10, 0x18, 0x01, 0x00}, []byte{0x00})
+	_, err = md.submit(ControlAccepted, []byte{0x18, 0x08, 0x10, 0x18, 0x01, 0x03}, []byte{0x00})
+	_, err = md.submit(ControlAccepted, []byte{0x18, 0x07, 0x02, 0x20, 0x18, 0x01}, c) // actual call
+	_, err = md.submit(ControlAccepted, []byte{0x18, 0x08, 0x10, 0x18, 0x01, 0x00}, []byte{0x00})
 	if err != nil {
 		return err
 	}
@@ -153,7 +158,7 @@ func (md *NetMD) SetDiscHeader(t string) error {
 
 // RequestDiscHeader returns the raw title of the disc
 func (md *NetMD) RequestDiscHeader() (string, error) {
-	r, err := md.rawCall([]byte{0x00, 0x18, 0x06, 0x02, 0x20, 0x18, 0x01}, []byte{0x00, 0x00, 0x30, 0x00, 0x0a, 0x00, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00})
+	r, err := md.submit(ControlAccepted, []byte{0x18, 0x06, 0x02, 0x20, 0x18, 0x01}, []byte{0x00, 0x00, 0x30, 0x00, 0x0a, 0x00, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00})
 	if err != nil {
 		return "", err
 	}
@@ -162,7 +167,7 @@ func (md *NetMD) RequestDiscHeader() (string, error) {
 
 // RecordingParameters current default recording parameters set on the NetMD
 func (md *NetMD) RecordingParameters() (encoding Encoding, channels Channels, err error) {
-	r, err := md.rawCall([]byte{0x00, 0x18, 0x09, 0x80, 0x01, 0x03, 0x30}, []byte{0x88, 0x01, 0x00, 0x30, 0x88, 0x05, 0x00, 0x30, 0x88, 0x07, 0x00, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00})
+	r, err := md.submit(ControlAccepted, []byte{0x18, 0x09, 0x80, 0x01, 0x03, 0x30}, []byte{0x88, 0x01, 0x00, 0x30, 0x88, 0x05, 0x00, 0x30, 0x88, 0x07, 0x00, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00})
 	if err != nil {
 		return
 	}
@@ -174,7 +179,7 @@ func (md *NetMD) RecordingParameters() (encoding Encoding, channels Channels, er
 // RequestStatus returns known status flags
 func (md *NetMD) RequestStatus() (disk bool, err error) {
 	//_, err = md.rawCall([]byte{0x00, 0x18, 0x08, 0x80, 0x00, 0x01}, []byte{0x00})
-	r, err := md.rawCall([]byte{0x00, 0x18, 0x09, 0x80, 0x01, 0x02, 0x30}, []byte{0x88, 0x00, 0x00, 0x30, 0x88, 0x04, 0x00, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00})
+	r, err := md.submit(ControlAccepted, []byte{0x18, 0x09, 0x80, 0x01, 0x02, 0x30}, []byte{0x88, 0x00, 0x00, 0x30, 0x88, 0x04, 0x00, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00})
 	if err != nil {
 		return
 	}
@@ -183,8 +188,8 @@ func (md *NetMD) RequestStatus() (disk bool, err error) {
 }
 
 func (md *NetMD) RequestTrackCount() (c int, err error) {
-	_, err = md.rawCall([]byte{0x00, 0x18, 0x08, 0x10, 0x10, 0x01, 0x01}, []byte{0x00})
-	r, err := md.rawCall([]byte{0x00, 0x18, 0x06, 0x02, 0x10, 0x10, 0x01}, []byte{0x30, 0x00, 0x10, 0x00, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00})
+	_, err = md.submit(ControlAccepted, []byte{0x18, 0x08, 0x10, 0x10, 0x01, 0x01}, []byte{0x00})
+	r, err := md.submit(ControlAccepted, []byte{0x18, 0x06, 0x02, 0x10, 0x10, 0x01}, []byte{0x30, 0x00, 0x10, 0x00, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00})
 	if err != nil {
 		return
 	}
@@ -194,7 +199,7 @@ func (md *NetMD) RequestTrackCount() (c int, err error) {
 
 // RequestTrackTitle returns the raw title of the trk number starting from 0
 func (md *NetMD) RequestTrackTitle(trk int) (t string, err error) {
-	r, err := md.rawCall([]byte{0x00, 0x18, 0x06, 0x02, 0x20, 0x18, byte(2) & 0xff}, []byte{0x00, byte(trk) & 0xff, 0x30, 0x00, 0x0a, 0x00, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00})
+	r, err := md.submit(ControlAccepted, []byte{0x18, 0x06, 0x02, 0x20, 0x18, byte(2) & 0xff}, []byte{0x00, byte(trk) & 0xff, 0x30, 0x00, 0x0a, 0x00, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00})
 	if err != nil {
 		return
 	}
@@ -220,14 +225,14 @@ func (md *NetMD) SetTrackTitle(trk int, t string, isNew bool) (err error) {
 	s = append(s, []byte(t)...)
 
 	if !isNew {
-		_, err = md.rawCall([]byte{0x00, 0x18, 0x08, 0x10, 0x18, 0x02, 0x00}, []byte{0x00})
-		_, err = md.rawCall([]byte{0x00, 0x18, 0x08, 0x10, 0x18, 0x02, 0x03}, []byte{0x00})
+		_, err = md.submit(ControlAccepted, []byte{0x18, 0x08, 0x10, 0x18, 0x02, 0x00}, []byte{0x00})
+		_, err = md.submit(ControlAccepted, []byte{0x18, 0x08, 0x10, 0x18, 0x02, 0x03}, []byte{0x00})
 	}
 
-	_, err = md.rawCall([]byte{0x00, 0x18, 0x07, 0x02, 0x20, 0x18, byte(2) & 0xff}, s)
+	_, err = md.submit(ControlAccepted, []byte{0x18, 0x07, 0x02, 0x20, 0x18, byte(2) & 0xff}, s)
 
 	if !isNew {
-		_, err = md.rawCall([]byte{0x00, 0x18, 0x08, 0x10, 0x18, 0x02, 0x00}, []byte{0x00})
+		_, err = md.submit(ControlAccepted, []byte{0x18, 0x08, 0x10, 0x18, 0x02, 0x00}, []byte{0x00})
 	}
 
 	if err != nil {
@@ -240,7 +245,7 @@ func (md *NetMD) SetTrackTitle(trk int, t string, isNew bool) (err error) {
 func (md *NetMD) EraseTrack(trk int) error {
 	s := []byte{0x10, 0x01}
 	s = append(s, intToHex16(int16(trk))...)
-	_, err := md.rawCall([]byte{0x00, 0x18, 0x40, 0xff, 0x01, 0x00, 0x20}, s)
+	_, err := md.submit(ControlAccepted, []byte{0x18, 0x40, 0xff, 0x01, 0x00, 0x20}, s)
 	if err != nil {
 		return err
 	}
@@ -253,8 +258,8 @@ func (md *NetMD) MoveTrack(trk, to int) error {
 	s = append(s, intToHex16(int16(trk))...)
 	s = append(s, 0x20, 0x10, 0x01)
 	s = append(s, intToHex16(int16(to))...)
-	_, err := md.rawCall([]byte{0x00, 0x18, 0x08, 0x10, 0x10, 0x01, 0x00}, []byte{0x00})
-	_, err = md.rawCall([]byte{0x00, 0x18, 0x43, 0xff, 0x00, 0x00, 0x20}, s)
+	_, err := md.submit(ControlAccepted, []byte{0x18, 0x08, 0x10, 0x10, 0x01, 0x00}, []byte{0x00})
+	_, err = md.submit(ControlAccepted, []byte{0x18, 0x43, 0xff, 0x00, 0x00, 0x20}, s)
 	if err != nil {
 		return err
 	}
@@ -266,7 +271,7 @@ func (md *NetMD) RequestTrackLength(trk int) (duration uint64, err error) {
 	s := []byte{0x01}
 	s = append(s, intToHex16(int16(trk))...)
 	s = append(s, 0x30, 0x00, 0x01, 0x00, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00)
-	r, err := md.rawCall([]byte{0x00, 0x18, 0x06, 0x02, 0x20, 0x10}, s)
+	r, err := md.submit(ControlAccepted, []byte{0x18, 0x06, 0x02, 0x20, 0x10}, s)
 	if err != nil {
 		return
 	}
@@ -277,83 +282,75 @@ func (md *NetMD) RequestTrackLength(trk int) (duration uint64, err error) {
 // RequestTrackEncoding returns the Encoding of the trk starting from 0
 func (md *NetMD) RequestTrackEncoding(trk int) (encoding Encoding, err error) {
 	s := append(intToHex16(int16(trk)), 0x30, 0x80, 0x07, 0x00, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00)
-	r, err := md.rawCall([]byte{0x00, 0x18, 0x06, 0x02, 0x20, 0x10, 0x01}, s)
+	r, err := md.submit(ControlAccepted, []byte{0x18, 0x06, 0x02, 0x20, 0x10, 0x01}, s)
 	if err != nil {
 		return
 	}
 	return Encoding(r[len(r)-2]), nil
 }
 
-func (md *NetMD) rawCall(chk []byte, payload []byte) ([]byte, error) {
-	i := append(chk, payload...)
-	if md.debug {
-		log.Printf("md.rawCall send <- % x", i)
-	}
-
+// submit will submit the `check + payload` wait for replies matching the `check` and `control`
+func (md *NetMD) submit(control Control, check []byte, payload []byte) ([]byte, error) {
+	i := []byte{0x00}
+	i = append(i, check...)
+	i = append(i, payload...)
 	md.poll()
+	if md.debug {
+		log.Printf("<- sending data: % x", i)
+	}
 	if _, err := md.devs[md.index].Control(gousb.ControlOut|gousb.ControlVendor|gousb.ControlInterface, 0x80, 0, 0, i); err != nil {
 		return nil, err
 	}
+	return md.receive(control, check, nil)
+}
 
-	for tries := 0; tries < 10; tries++ {
+func (md *NetMD) receive(control Control, check []byte, c chan Transfer) ([]byte, error) {
+	for tries := 0; tries < 300; tries++ {
+		if c != nil {
+			c <- Transfer{
+				Type: TtPoll,
+			}
+		}
 		if h := md.poll(); h != -1 {
-			b, err := md.receive(h)
-			if err != nil {
+			recv := make([]byte, h)
+			if _, err := md.devs[md.index].Control(gousb.ControlIn|gousb.ControlVendor|gousb.ControlInterface, 0x81, 0, 0, recv); err != nil {
 				return nil, err
 			}
-
-			if bytes.Equal(b[1:len(chk)], chk[1:]) {
-				return b, nil
-			} else {
+			chkLen := len(check) + 1
+			if bytes.Equal(recv[1:len(check)+1], check) {
+				ctrl := Control(recv[0])
 				if md.debug {
-					log.Printf("Skipping mismatch: % x <-> % x", b[1:len(chk)], chk[1:])
+					log.Printf("-> incoming data matched check: % x", recv[1:chkLen])
+					if ctrl == ControlAccepted || ctrl == ControlInterim {
+						log.Printf("-> payload: % x", recv[chkLen:])
+					}
+				}
+				switch ctrl {
+				case ControlAccepted:
+					if ctrl == control {
+						return recv, nil
+					} else if md.debug {
+						log.Printf("!! skipped accepted call: % x", recv[chkLen:])
+					}
+				case ControlInterim:
+					if ctrl == control {
+						return recv, nil
+					} else if md.debug {
+						log.Printf("?? skipped interim call: % x", recv[chkLen:])
+					}
+				case ControlRejected:
+					return nil, errors.New("!! submit was rejected")
+				case ControlStub:
+					if md.debug {
+						log.Printf("?? not implemented: % x", recv[chkLen:])
+					}
+					return recv, nil
 				}
 			}
 		}
 		time.Sleep(time.Millisecond * 100)
 	}
-
-	return nil, errors.New("poll failed")
-}
-
-// acquire is part of SHARP NetMD protocols and probably do nothing on Sony devices
-func (md *NetMD) acquire() error {
-	_, err := md.rawCall([]byte{0x00, 0xff, 0x01}, []byte{0x0c, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff})
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
-// release is part of the acquire lifecycle
-func (md *NetMD) release() error {
-	_, err := md.rawCall([]byte{0x00, 0xff, 0x01}, []byte{0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff})
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
-func (md *NetMD) receive(s int) ([]byte, error) {
-	buf := make([]byte, s)
-	if _, err := md.devs[md.index].Control(gousb.ControlIn|gousb.ControlVendor|gousb.ControlInterface, 0x81, 0, 0, buf); err != nil {
-		return nil, err
-	}
-	if md.debug {
-		if buf[0] == 0x0a {
-			log.Printf(" -> Rejected -> % x", buf)
-			return nil, errors.New("controlIn was rejected")
-		} else if buf[0] == 0x09 {
-			log.Printf(" -> Accepted -> % x", buf)
-		} else if buf[0] == 0x0f {
-			log.Printf(" -> Interim <-")
-		} else if buf[0] == 0x08 {
-			log.Printf(" -> notImplemented <-")
-		} else {
-			log.Printf(" -> Unknown  -> % x", buf)
-		}
-	}
-	return buf, nil
+	return nil, errors.New("no data matched check, timed out")
 }
 
 func (md *NetMD) poll() int {

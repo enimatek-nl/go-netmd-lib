@@ -4,12 +4,12 @@ This is a study and re-implementation library of the [linux-minidisc](https://gi
 
 I tried to simplify most code in a 'go' manner so understanding the NetMD protocol will be a bit easier for the next person who will try and do the same :-) 
 
-## usage
+## Usage
 
 `go get github.com/enimatek-nl/go-netmd-lib`
 
-## example
-In this example we send a stereo pcm file to the NetMD device concurrent.
+## Example
+In this example we send a stereo pcm file to the NetMD device concurrently.
 ```go
 md, err := netmd.NewNetMD(0, false)
 if err != nil {
@@ -49,7 +49,7 @@ for{
 }
 ```
 
-## todo
-The library has only been tested with my Sony NH600.
+## TODO
+The library has only been tested with my Sony MZ-NH600 and the Sharp IM-DR420.
 
 Some functions (eg. groups parsing of titles) are not implemented yet.

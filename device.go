@@ -18,7 +18,7 @@ var (
 		{vendorId: 0x054c, deviceId: 0x0075, name: "Sony MZ-N1"},
 		{vendorId: 0x054c, deviceId: 0x007c, name: "Sony"},
 		{vendorId: 0x054c, deviceId: 0x0080, name: "Sony LAM-1"},
-		{vendorId: 0x054c, deviceId: 0x0081, name: "Sony MDS-JB980"},
+		{vendorId: 0x054c, deviceId: 0x0081, name: "Sony MDS-JB980/JE780"},
 		{vendorId: 0x054c, deviceId: 0x0084, name: "Sony MZ-N505"},
 		{vendorId: 0x054c, deviceId: 0x0085, name: "Sony MZ-S1"},
 		{vendorId: 0x054c, deviceId: 0x0086, name: "Sony MZ-N707"},
