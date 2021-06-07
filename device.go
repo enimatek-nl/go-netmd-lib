@@ -1,6 +1,6 @@
 package netmd
 
-import "github.com/google/gousb"
+import "github.com/enimatek-nl/gousb"
 
 type Device struct {
 	vendorId gousb.ID

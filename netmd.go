@@ -3,7 +3,7 @@ package netmd
 import (
 	"bytes"
 	"errors"
-	"github.com/google/gousb"
+	"github.com/enimatek-nl/gousb"
 	"log"
 	"time"
 )

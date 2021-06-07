@@ -1,2 +1,4 @@
+github.com/enimatek-nl/gousb v1.1.2-0.20210607143911-42b4d2b04d56 h1:8toDjPQBSzNM1/NzY81YtMnZ7CcUNupr1WYqH+/742Y=
+github.com/enimatek-nl/gousb v1.1.2-0.20210607143911-42b4d2b04d56/go.mod h1:h2xLIj29l9ZWdaYLEPsYCNEO+wKw1H3SpHVfXR12uTw=
 github.com/google/gousb v1.1.1 h1:2sjwXlc0PIBgDnXtNxUrHcD/RRFOmAtRq4QgnFBE6xc=
 github.com/google/gousb v1.1.1/go.mod h1:b3uU8itc6dHElt063KJobuVtcKHWEfFOysOqBNzHhLY=
