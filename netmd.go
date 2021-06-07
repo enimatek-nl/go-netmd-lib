@@ -255,7 +255,6 @@ func (md *NetMD) RequestTrackFlag(trk int) (flag TrackProt, err error) {
 	if err != nil {
 		return
 	}
-	log.Printf("% x", d)
 	return TrackProt(d[15]), nil
 }
 
