@@ -30,8 +30,8 @@ func (md *NetMD) Send(trk *Track, c chan Transfer) {
 	defer close(c)
 
 	// housekeeping
-	md.acquire()
 	md.leaveSecureSession()
+	md.acquire()
 	md.trackProtection(0x01) // not implemented in sharp
 
 	c <- Transfer{

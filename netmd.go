@@ -23,6 +23,8 @@ type Channels byte
 
 type Control byte
 
+type TrackProt byte
+
 const (
 	EncSP  Encoding = 0x90
 	EncLP2 Encoding = 0x92
@@ -35,6 +37,9 @@ const (
 	ControlAccepted Control = 0x09
 	ControlInterim  Control = 0x0f
 	ControlStub     Control = 0x08
+
+	TrackProtected   TrackProt = 0x03
+	TrackUnprotected TrackProt = 0x00
 )
 
 var (
@@ -239,6 +244,19 @@ func (md *NetMD) SetTrackTitle(trk int, t string, isNew bool) (err error) {
 		return
 	}
 	return
+}
+
+//
+func (md *NetMD) RequestTrackFlag(trk int) (flag TrackProt, err error) {
+	s := []byte{0x01, 0x20, 0x10, 0x01}
+	s = append(s, intToHex16(int16(trk))...)
+	s = append(s, 0xff, 0x00, 0x00, 0x01, 0x00, 0x08)
+	d, err := md.submit(ControlAccepted, []byte{0x18, 0x06}, s)
+	if err != nil {
+		return
+	}
+	log.Printf("% x", d)
+	return TrackProt(d[15]), nil
 }
 
 // EraseTrack will erase the trk number starting from 0

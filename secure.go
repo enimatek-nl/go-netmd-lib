@@ -46,12 +46,13 @@ func (md *NetMD) leaveSecureSession() error {
 	return nil
 }
 
-func (md *NetMD) trackProtection(i int16) error {
+func (md *NetMD) trackProtection(i int) error {
 	// 0 - enabled
 	// 1 - disabled
-	s := []byte{0xff}
-	s = append(s, intToHex16(i)...)
-	_, err := md.submit(ControlAccepted, []byte{0x18, 0x00, 0x08, 0x00, 0x46, 0xf0, 0x03, 0x01, 0x03, 0x2b}, s)
+	//s := []byte{0xff}
+	//s = append(s, intToHex16(i)...)
+	_, err := md.submit(ControlAccepted, []byte{0x18, 0x00, 0x08}, []byte{0x00, 0x46, 0xf0, 0x03, 0x01, 0x03, 0x2b, 0xff, byte(i) & 0xff})
+	//_, err := md.submit(ControlAccepted, []byte{0x18, 0x00, 0x08, 0x00, 0x46, 0xf0, 0x03, 0x01, 0x03, 0x2b}, s)
 	if err != nil {
 		return err
 	}
